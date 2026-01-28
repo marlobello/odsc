@@ -1,0 +1,14 @@
+[Unit]
+Description=OneDrive Sync Client Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m odsc.daemon
+Restart=on-failure
+RestartSec=5
+User=%u
+
+[Install]
+WantedBy=default.target

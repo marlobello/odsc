@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=OneDrive Sync Client
+Comment=Sync files with Microsoft OneDrive
+Exec=odsc-gui
+Icon=folder-cloud
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=onedrive;sync;cloud;storage;
