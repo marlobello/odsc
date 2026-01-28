@@ -24,6 +24,11 @@ from .logging_config import setup_logging
 logger = logging.getLogger(__name__)
 
 
+class SecurityError(Exception):
+    """Raised when a security violation is detected."""
+    pass
+
+
 class DialogHelper:
     """Reusable dialog utilities to reduce code duplication."""
     
@@ -944,7 +949,8 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         
         def remove_in_thread():
             try:
-                local_path = self.config.sync_directory / rel_path
+                # Validate path before removal
+                local_path = self._validate_sync_path(rel_path, self.config.sync_directory)
                 
                 local_path.unlink(missing_ok=True)
                 logger.info(f"Removed local copy: {rel_path}")
@@ -988,6 +994,78 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         thread = threading.Thread(target=load_in_thread, daemon=True)
         thread.start()
     
+    def _sanitize_onedrive_path(self, raw_path: str) -> str:
+        """Safely extract relative path from OneDrive API path.
+        
+        Args:
+            raw_path: Raw path from OneDrive API
+            
+        Returns:
+            Sanitized relative path safe for local file system
+            
+        Raises:
+            SecurityError: If path contains dangerous components
+        """
+        # Remove known OneDrive prefixes
+        path = raw_path.replace('/drive/root:', '').replace('/drive/root', '')
+        
+        # Use pathlib to properly handle path components
+        parts = Path(path).parts
+        
+        # Filter out dangerous components
+        safe_parts = []
+        for part in parts:
+            # Block path traversal and special names
+            if part in ('..', '.', '/', '\\', ''):
+                logger.warning(f"Blocked dangerous path component: {part}")
+                continue
+            # Block absolute paths
+            if part.startswith('/') or part.startswith('\\'):
+                logger.warning(f"Blocked absolute path component: {part}")
+                continue
+            safe_parts.append(part)
+        
+        if not safe_parts:
+            return ''
+        
+        return str(Path(*safe_parts))
+    
+    def _validate_sync_path(self, rel_path: str, sync_dir: Path) -> Path:
+        """Validate path is within sync directory and not a symlink.
+        
+        Args:
+            rel_path: Relative path to validate
+            sync_dir: Sync directory base path
+            
+        Returns:
+            Validated absolute path
+            
+        Raises:
+            SecurityError: If path validation fails
+        """
+        # Convert to absolute path
+        full_path = (sync_dir / rel_path).resolve()
+        sync_dir_resolved = sync_dir.resolve()
+        
+        # Check it's within sync directory
+        try:
+            full_path.relative_to(sync_dir_resolved)
+        except ValueError:
+            raise SecurityError(f"Path traversal detected: {rel_path}")
+        
+        # Check for symlinks in the path (don't follow them)
+        # Start from full_path and work backwards to sync_dir
+        check_path = full_path
+        while check_path != sync_dir_resolved:
+            if check_path.is_symlink():
+                raise SecurityError(f"Symlink detected in path: {rel_path}")
+            if check_path == check_path.parent:
+                # Reached root without finding sync_dir - should not happen
+                break
+            check_path = check_path.parent
+        
+        return full_path
+    
     def _update_file_list(self, files: List[Dict[str, Any]]) -> None:
         """Update file list view with folder hierarchy.
         
@@ -1020,19 +1098,30 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             is_folder = 'folder' in item
             item_id = item.get('id', '')
             
-            # Get parent path
-            parent_ref = item.get('parentReference', {})
-            parent_path = parent_ref.get('path', '')
-            if parent_path:
-                parent_path = parent_path.replace('/drive/root:', '')
+            try:
+                # Get parent path and sanitize
+                parent_ref = item.get('parentReference', {})
+                parent_path = parent_ref.get('path', '')
+                if parent_path:
+                    parent_path = self._sanitize_onedrive_path(parent_path)
+                
+                # Build full path
+                if parent_path:
+                    full_path = str(Path(parent_path) / name)
+                else:
+                    full_path = name
+                
+                # Validate path is safe
+                validated_path = self._validate_sync_path(full_path, sync_dir)
+                
+                remote_files_set.add(full_path)
             
-            # Build full path
-            if parent_path:
-                full_path = parent_path.lstrip('/') + '/' + name
-            else:
-                full_path = name
-            
-            remote_files_set.add(full_path)
+            except SecurityError as e:
+                logger.warning(f"Skipping unsafe path for {name}: {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"Error processing item {name}: {e}")
+                continue
             
             # Determine parent iter
             parent_iter = None
@@ -1159,10 +1248,12 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 file_info = self.client.get_file_metadata(file_id)
                 parent_path = file_info.get('parentReference', {}).get('path', '')
                 if parent_path:
-                    parent_path = parent_path.replace('/drive/root:', '')
+                    parent_path = self._sanitize_onedrive_path(parent_path)
                 
-                rel_path = (parent_path.lstrip('/') + '/' + file_name) if parent_path else file_name
-                local_path = self.config.sync_directory / rel_path
+                rel_path = str(Path(parent_path) / file_name) if parent_path else file_name
+                
+                # Validate path before download
+                local_path = self._validate_sync_path(rel_path, self.config.sync_directory)
                 
                 # Download file
                 metadata = self.client.download_file(file_id, local_path)

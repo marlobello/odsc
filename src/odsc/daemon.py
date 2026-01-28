@@ -21,6 +21,11 @@ from .logging_config import setup_logging
 logger = logging.getLogger(__name__)
 
 
+class SecurityError(Exception):
+    """Raised when a security violation is detected."""
+    pass
+
+
 class SyncEventHandler(FileSystemEventHandler):
     """Handles file system events for syncing."""
     
@@ -189,6 +194,78 @@ class SyncDaemon:
             # Wait for sync interval
             time.sleep(self.config.sync_interval)
     
+    def _sanitize_onedrive_path(self, raw_path: str) -> str:
+        """Safely extract relative path from OneDrive API path.
+        
+        Args:
+            raw_path: Raw path from OneDrive API
+            
+        Returns:
+            Sanitized relative path safe for local file system
+            
+        Raises:
+            SecurityError: If path contains dangerous components
+        """
+        # Remove known OneDrive prefixes
+        path = raw_path.replace('/drive/root:', '').replace('/drive/root', '')
+        
+        # Use pathlib to properly handle path components
+        parts = Path(path).parts
+        
+        # Filter out dangerous components
+        safe_parts = []
+        for part in parts:
+            # Block path traversal and special names
+            if part in ('..', '.', '/', '\\', ''):
+                logger.warning(f"Blocked dangerous path component: {part}")
+                continue
+            # Block absolute paths
+            if part.startswith('/') or part.startswith('\\'):
+                logger.warning(f"Blocked absolute path component: {part}")
+                continue
+            safe_parts.append(part)
+        
+        if not safe_parts:
+            return ''
+        
+        return str(Path(*safe_parts))
+    
+    def _validate_sync_path(self, rel_path: str, sync_dir: Path) -> Path:
+        """Validate path is within sync directory and not a symlink.
+        
+        Args:
+            rel_path: Relative path to validate
+            sync_dir: Sync directory base path
+            
+        Returns:
+            Validated absolute path
+            
+        Raises:
+            SecurityError: If path validation fails
+        """
+        # Convert to absolute path
+        full_path = (sync_dir / rel_path).resolve()
+        sync_dir_resolved = sync_dir.resolve()
+        
+        # Check it's within sync directory
+        try:
+            full_path.relative_to(sync_dir_resolved)
+        except ValueError:
+            raise SecurityError(f"Path traversal detected: {rel_path}")
+        
+        # Check for symlinks in the path (don't follow them)
+        # Start from full_path and work backwards to sync_dir
+        check_path = full_path
+        while check_path != sync_dir_resolved:
+            if check_path.is_symlink():
+                raise SecurityError(f"Symlink detected in path: {rel_path}")
+            if check_path == check_path.parent:
+                # Reached root without finding sync_dir - should not happen
+                break
+            check_path = check_path.parent
+        
+        return full_path
+    
     def _should_do_periodic_sync(self) -> bool:
         """Check if periodic sync should run.
         
@@ -227,20 +304,33 @@ class SyncDaemon:
         remote_files = {}
         for item in remote_items:
             if 'folder' not in item:
-                # Extract path
-                parent_path = item.get('parentReference', {}).get('path', '').replace('/drive/root:', '')
-                name = item.get('name', '')
-                if parent_path:
-                    full_path = parent_path.lstrip('/') + '/' + name
-                else:
-                    full_path = name
-                
-                remote_files[full_path] = {
-                    'id': item['id'],
-                    'size': item.get('size', 0),
-                    'eTag': item.get('eTag', ''),
-                    'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
-                }
+                try:
+                    # Extract and sanitize path
+                    parent_path = item.get('parentReference', {}).get('path', '')
+                    name = item.get('name', '')
+                    
+                    # Sanitize OneDrive path
+                    if parent_path:
+                        safe_parent = self._sanitize_onedrive_path(parent_path)
+                        full_path = str(Path(safe_parent) / name) if safe_parent else name
+                    else:
+                        full_path = name
+                    
+                    # Validate it's within sync directory
+                    validated_path = self._validate_sync_path(full_path, sync_dir)
+                    
+                    remote_files[full_path] = {
+                        'id': item['id'],
+                        'size': item.get('size', 0),
+                        'eTag': item.get('eTag', ''),
+                        'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
+                    }
+                except SecurityError as e:
+                    logger.warning(f"Skipping unsafe remote path: {e}")
+                    continue
+                except Exception as e:
+                    logger.warning(f"Error processing remote item: {e}")
+                    continue
         
         logger.info(f"Found {len(remote_files)} remote files")
         
@@ -289,7 +379,8 @@ class SyncDaemon:
                     
                 elif action == 'download':
                     logger.info(f"Downloading updated version: {rel_path}")
-                    local_path = sync_dir / rel_path
+                    # Validate path before download
+                    local_path = self._validate_sync_path(rel_path, sync_dir)
                     metadata = self.client.download_file(remote_info['id'], local_path)
                     self.state['files'][rel_path] = {
                         'mtime': local_path.stat().st_mtime,
@@ -301,7 +392,8 @@ class SyncDaemon:
                     
                 elif action == 'recycle':
                     logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
-                    local_path = self.config.sync_directory / rel_path
+                    # Validate path before deletion
+                    local_path = self._validate_sync_path(rel_path, sync_dir)
                     self._move_to_recycle_bin(local_path, rel_path)
                     # Remove from state
                     if rel_path in self.state['files']:
@@ -310,7 +402,8 @@ class SyncDaemon:
                 elif action == 'conflict':
                     logger.warning(f"CONFLICT detected for {rel_path} - keeping both versions")
                     # Keep local version and download remote as .conflict file
-                    conflict_path = sync_dir / f"{rel_path}.conflict"
+                    conflict_rel = f"{rel_path}.conflict"
+                    conflict_path = self._validate_sync_path(conflict_rel, sync_dir)
                     metadata = self.client.download_file(remote_info['id'], conflict_path)
                     logger.info(f"Saved remote version as: {conflict_path}")
                     
