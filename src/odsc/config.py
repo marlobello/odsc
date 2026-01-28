@@ -110,6 +110,76 @@ class Config:
         """Get log level."""
         return self._config.get('log_level', 'INFO').upper()
     
+    def _get_encryption_key(self) -> bytes:
+        """Get or create encryption key from system keyring.
+        
+        Returns:
+            Encryption key bytes
+        """
+        service_name = "odsc"
+        key_name = "token_encryption_key"
+        
+        # Try to get existing key
+        key_str = keyring.get_password(service_name, key_name)
+        
+        if key_str:
+            # Decode existing key
+            return base64.b64decode(key_str.encode())
+        
+        # Generate new key
+        key = Fernet.generate_key()
+        
+        # Store in keyring
+        key_str = base64.b64encode(key).decode()
+        keyring.set_password(service_name, key_name, key_str)
+        
+        logger.info("Generated new encryption key")
+        return key
+    
+    def _encrypt_token(self, token_data: Dict[str, Any]) -> bytes:
+        """Encrypt token data.
+        
+        Args:
+            token_data: Token data dictionary
+            
+        Returns:
+            Encrypted token bytes
+        """
+        key = self._get_encryption_key()
+        fernet = Fernet(key)
+        
+        # Serialize and encrypt
+        json_str = json.dumps(token_data)
+        encrypted = fernet.encrypt(json_str.encode())
+        
+        return encrypted
+    
+    def _decrypt_token(self, encrypted_data: bytes) -> Dict[str, Any]:
+        """Decrypt token data.
+        
+        Args:
+            encrypted_data: Encrypted token bytes
+            
+        Returns:
+            Decrypted token data dictionary
+            
+        Raises:
+            ValueError: If decryption fails
+        """
+        try:
+            key = self._get_encryption_key()
+            fernet = Fernet(key)
+            
+            # Decrypt and deserialize
+            decrypted = fernet.decrypt(encrypted_data)
+            token_data = json.loads(decrypted.decode())
+            
+            return token_data
+        except InvalidToken:
+            raise ValueError("Invalid or corrupted token data")
+        except Exception as e:
+            raise ValueError(f"Decryption failed: {e}")
+    
     def save_token(self, token_data: Dict[str, Any]) -> None:
         """Save encrypted OneDrive authentication token.
         
