@@ -12,7 +12,7 @@ from urllib.parse import urlparse, parse_qs
 
 import gi
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, GLib, Gdk
+from gi.repository import Gtk, GLib, Gdk, Gio
 
 from .config import Config
 from .onedrive_client import OneDriveClient
@@ -49,29 +49,19 @@ class AuthCallbackHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-class OneDriveGUI(Gtk.Window):
+class OneDriveGUI(Gtk.ApplicationWindow):
     """Main GNOME GUI window for OneDrive Sync Client."""
     
-    def __init__(self):
+    def __init__(self, application):
         """Initialize GUI."""
-        Gtk.Window.__init__(self, title="OneDrive Sync Client")
+        Gtk.ApplicationWindow.__init__(self, application=application, title="OneDrive Sync Client")
+        
         self.set_default_size(800, 600)
         self.set_border_width(10)
         
-        # Set window icon
-        try:
-            # Try to load from icon theme first
-            self.set_icon_name("odsc")
-        except:
-            # Fallback to loading from file
-            icon_path = Path(__file__).parent.parent.parent / "desktop" / "odsc.svg"
-            if icon_path.exists():
-                try:
-                    from gi.repository import GdkPixbuf
-                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(icon_path), 48, 48)
-                    self.set_icon(pixbuf)
-                except Exception as e:
-                    logger.warning(f"Could not load icon: {e}")
+        # Set window icon explicitly for both application window and default
+        self.set_icon_name("odsc")
+        Gtk.Window.set_default_icon_name("odsc")
         
         self.config = Config()
         
@@ -84,6 +74,18 @@ class OneDriveGUI(Gtk.Window):
         self.client: Optional[OneDriveClient] = None
         self.remote_files: List[Dict[str, Any]] = []
         
+        # Menu items that need to be updated based on auth state
+        self.login_menu_item: Optional[Gtk.MenuItem] = None
+        self.logout_menu_item: Optional[Gtk.MenuItem] = None
+        
+        # Log panel components
+        self.log_panel_visible = False
+        self.log_text_view: Optional[Gtk.TextView] = None
+        self.log_panel: Optional[Gtk.Box] = None
+        self.main_paned: Optional[Gtk.Paned] = None
+        self.log_file_position = 0  # Track file position for tailing
+        self.log_tail_timer_id = None  # Timer ID for log tailing
+        
         # Initialize client if authenticated
         if self.config.load_token():
             logger.info("Found existing token, initializing client")
@@ -92,7 +94,9 @@ class OneDriveGUI(Gtk.Window):
             logger.info("No existing token found")
         
         self._build_ui()
-        self.connect("destroy", Gtk.main_quit)
+        
+        # Update menu state after UI is built
+        self._update_auth_menu_state()
     
     def _init_client(self) -> bool:
         """Initialize OneDrive client.
@@ -110,23 +114,34 @@ class OneDriveGUI(Gtk.Window):
     def _build_ui(self) -> None:
         """Build the user interface."""
         # Main vertical box
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add(vbox)
         
-        # Toolbar
-        toolbar = self._create_toolbar()
-        vbox.pack_start(toolbar, False, False, 0)
+        # Menu bar
+        menubar = self._create_menubar()
+        vbox.pack_start(menubar, False, False, 0)
         
-        # Status bar
+        # Status bar (add spacing back)
+        status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        vbox.pack_start(status_box, False, False, 0)
+        
         self.status_label = Gtk.Label()
         self.status_label.set_markup("<i>Status: Ready</i>")
         self.status_label.set_halign(Gtk.Align.START)
-        vbox.pack_start(self.status_label, False, False, 0)
+        status_box.pack_start(self.status_label, False, False, 0)
+        
+        # Create paned widget to hold main content and log panel
+        self.main_paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
+        vbox.pack_start(self.main_paned, True, True, 0)
+        
+        # Main content area (top pane)
+        main_content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.main_paned.pack1(main_content_box, resize=True, shrink=False)
         
         # Main content area with scrolled window
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        vbox.pack_start(scrolled, True, True, 0)
+        main_content_box.pack_start(scrolled, True, True, 0)
         
         # TreeView for file/folder hierarchy (icon, name, size, modified, local, id, is_folder, path)
         self.file_store = Gtk.TreeStore(str, str, str, str, bool, str, bool, str)
@@ -174,7 +189,7 @@ class OneDriveGUI(Gtk.Window):
         
         # Bottom button bar
         button_box = Gtk.Box(spacing=6)
-        vbox.pack_start(button_box, False, False, 0)
+        main_content_box.pack_start(button_box, False, False, 0)
         
         self.keep_local_button = Gtk.Button(label="Keep Local Copy")
         self.keep_local_button.connect("clicked", self._on_keep_local_clicked)
@@ -189,6 +204,9 @@ class OneDriveGUI(Gtk.Window):
         self.refresh_button = Gtk.Button(label="Refresh")
         self.refresh_button.connect("clicked", self._on_refresh_clicked)
         button_box.pack_start(self.refresh_button, False, False, 0)
+        
+        # Create log panel (bottom pane) - initially hidden
+        self._create_log_panel()
         
         # Load files if authenticated
         if self.client:
@@ -221,43 +239,369 @@ class OneDriveGUI(Gtk.Window):
             # Blue cloud for online-only files (not downloaded)
             cell.set_property('icon-name', 'weather-few-clouds')
     
-    def _create_toolbar(self) -> Gtk.Toolbar:
-        """Create toolbar.
+    def _create_log_panel(self) -> None:
+        """Create the log panel (initially hidden)."""
+        # Create panel container
+        self.log_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.log_panel.set_border_width(6)
+        
+        # Header with title and refresh button
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.log_panel.pack_start(header_box, False, False, 0)
+        
+        log_label = Gtk.Label()
+        log_label.set_markup(f"<b>Log: {self.config.log_path}</b>")
+        log_label.set_halign(Gtk.Align.START)
+        header_box.pack_start(log_label, True, True, 0)
+        
+        # Refresh button
+        refresh_log_button = Gtk.Button(label="Refresh")
+        refresh_log_button.connect("clicked", self._on_refresh_log_clicked)
+        header_box.pack_start(refresh_log_button, False, False, 0)
+        
+        # Auto-scroll toggle
+        self.auto_scroll_check = Gtk.CheckButton(label="Auto-scroll")
+        self.auto_scroll_check.set_active(True)
+        header_box.pack_start(self.auto_scroll_check, False, False, 0)
+        
+        # Scrolled window with text view
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_min_content_height(200)
+        self.log_panel.pack_start(scrolled, True, True, 0)
+        
+        self.log_text_view = Gtk.TextView()
+        self.log_text_view.set_editable(False)
+        self.log_text_view.set_monospace(True)
+        self.log_text_view.set_wrap_mode(Gtk.WrapMode.NONE)
+        scrolled.add(self.log_text_view)
+        
+        # Don't add to paned yet - will add when shown
+    
+    def _on_toggle_log_panel(self, widget) -> None:
+        """Handle toggle log panel menu item."""
+        if widget.get_active():
+            self._show_log_panel()
+        else:
+            self._hide_log_panel()
+    
+    def _show_log_panel(self) -> None:
+        """Show the log panel."""
+        if not self.log_panel_visible:
+            # Add panel to paned widget
+            self.main_paned.pack2(self.log_panel, resize=False, shrink=False)
+            self.log_panel.show_all()
+            
+            # Set paned position (70% for main content, 30% for log)
+            window_height = self.get_allocated_height()
+            self.main_paned.set_position(int(window_height * 0.7))
+            
+            # Load log content
+            self._refresh_log_content()
+            
+            # Start log tailing timer (update every 500ms)
+            self.log_tail_timer_id = GLib.timeout_add(500, self._tail_log_file)
+            
+            self.log_panel_visible = True
+            logger.info("Log panel shown, tailing started")
+    
+    def _hide_log_panel(self) -> None:
+        """Hide the log panel."""
+        if self.log_panel_visible:
+            # Stop log tailing timer
+            if self.log_tail_timer_id:
+                GLib.source_remove(self.log_tail_timer_id)
+                self.log_tail_timer_id = None
+            
+            # Remove panel from paned widget
+            self.main_paned.remove(self.log_panel)
+            self.log_panel_visible = False
+            logger.info("Log panel hidden, tailing stopped")
+    
+    def _on_refresh_log_clicked(self, widget) -> None:
+        """Handle refresh log button click."""
+        self._refresh_log_content()
+    
+    def _refresh_log_content(self) -> None:
+        """Refresh the log content from file (full reload)."""
+        log_path = self.config.log_path
+        
+        if not log_path.exists():
+            buffer = self.log_text_view.get_buffer()
+            buffer.set_text("Log file does not exist yet.\n")
+            self.log_file_position = 0
+            return
+        
+        try:
+            with open(log_path, 'r') as f:
+                log_content = f.read()
+                self.log_file_position = f.tell()
+            
+            buffer = self.log_text_view.get_buffer()
+            buffer.set_text(log_content)
+            
+            # Auto-scroll to bottom if enabled
+            if self.auto_scroll_check.get_active():
+                GLib.idle_add(self._scroll_log_to_end)
+                
+        except Exception as e:
+            buffer = self.log_text_view.get_buffer()
+            buffer.set_text(f"Error reading log file: {e}\n")
+            self.log_file_position = 0
+    
+    def _tail_log_file(self) -> bool:
+        """Tail the log file (read only new content).
         
         Returns:
-            Toolbar widget
+            True to continue the timer, False to stop
         """
-        toolbar = Gtk.Toolbar()
+        log_path = self.config.log_path
         
-        # Authenticate button
-        auth_button = Gtk.ToolButton()
-        auth_button.set_label("Authenticate")
-        auth_button.set_icon_name("dialog-password")
-        auth_button.connect("clicked", self._on_auth_clicked)
-        toolbar.insert(auth_button, 0)
+        if not log_path.exists():
+            return True  # Continue timer, file might be created
         
-        # Settings button
-        settings_button = Gtk.ToolButton()
-        settings_button.set_label("Settings")
-        settings_button.set_icon_name("preferences-system")
-        settings_button.connect("clicked", self._on_settings_clicked)
-        toolbar.insert(settings_button, 1)
+        try:
+            with open(log_path, 'r') as f:
+                # Seek to last known position
+                f.seek(self.log_file_position)
+                
+                # Read new content
+                new_content = f.read()
+                
+                if new_content:
+                    # Update file position
+                    self.log_file_position = f.tell()
+                    
+                    # Append to text view
+                    buffer = self.log_text_view.get_buffer()
+                    end_iter = buffer.get_end_iter()
+                    buffer.insert(end_iter, new_content)
+                    
+                    # Auto-scroll to bottom if enabled
+                    if self.auto_scroll_check.get_active():
+                        GLib.idle_add(self._scroll_log_to_end)
+                        
+        except Exception as e:
+            # Log error but continue tailing
+            logger.debug(f"Error tailing log file: {e}")
         
-        return toolbar
+        return True  # Continue the timer
     
-    def _on_auth_clicked(self, widget) -> None:
-        """Handle authentication button click."""
-        # Show authentication info dialog
+    def _scroll_log_to_end(self) -> bool:
+        """Scroll log view to the end."""
+        buffer = self.log_text_view.get_buffer()
+        end_iter = buffer.get_end_iter()
+        self.log_text_view.scroll_to_iter(end_iter, 0.0, False, 0.0, 0.0)
+        return False
+    
+    def _restart_daemon(self) -> None:
+        """Restart the ODSC daemon using systemctl."""
+        import subprocess
+        
+        logger.info("Attempting to restart daemon via systemctl")
+        
+        try:
+            # Check if daemon is running/enabled first
+            result = subprocess.run(
+                ['systemctl', '--user', 'is-active', 'odsc'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            daemon_was_running = (result.returncode == 0)
+            
+            if daemon_was_running:
+                # Restart the daemon
+                result = subprocess.run(
+                    ['systemctl', '--user', 'restart', 'odsc'],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if result.returncode == 0:
+                    logger.info("Daemon restarted successfully")
+                    dialog = Gtk.MessageDialog(
+                        transient_for=self,
+                        flags=0,
+                        message_type=Gtk.MessageType.INFO,
+                        buttons=Gtk.ButtonsType.OK,
+                        text="Daemon Restarted",
+                    )
+                    dialog.format_secondary_text(
+                        "The ODSC daemon has been restarted successfully.\n"
+                        "Your new settings are now active."
+                    )
+                    dialog.run()
+                    dialog.destroy()
+                else:
+                    logger.error(f"Failed to restart daemon: {result.stderr}")
+                    self._show_error(f"Failed to restart daemon:\n{result.stderr}")
+            else:
+                # Daemon is not running
+                logger.info("Daemon is not currently running")
+                dialog = Gtk.MessageDialog(
+                    transient_for=self,
+                    flags=0,
+                    message_type=Gtk.MessageType.INFO,
+                    buttons=Gtk.ButtonsType.NONE,
+                    text="Daemon Not Running",
+                )
+                dialog.format_secondary_text(
+                    "The ODSC daemon is not currently running.\n\n"
+                    "Would you like to start it now?"
+                )
+                dialog.add_button("No", Gtk.ResponseType.NO)
+                dialog.add_button("Start Daemon", Gtk.ResponseType.YES)
+                
+                response = dialog.run()
+                dialog.destroy()
+                
+                if response == Gtk.ResponseType.YES:
+                    self._start_daemon()
+                    
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout while trying to restart daemon")
+            self._show_error("Timeout while trying to restart daemon.\nPlease restart manually.")
+        except FileNotFoundError:
+            logger.error("systemctl command not found")
+            self._show_error(
+                "systemctl command not found.\n\n"
+                "Please restart the daemon manually:\n"
+                "  systemctl --user restart odsc"
+            )
+        except Exception as e:
+            logger.error(f"Error restarting daemon: {e}", exc_info=True)
+            self._show_error(f"Error restarting daemon:\n{e}")
+    
+    def _start_daemon(self) -> None:
+        """Start the ODSC daemon using systemctl."""
+        import subprocess
+        
+        logger.info("Attempting to start daemon via systemctl")
+        
+        try:
+            result = subprocess.run(
+                ['systemctl', '--user', 'start', 'odsc'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                logger.info("Daemon started successfully")
+                dialog = Gtk.MessageDialog(
+                    transient_for=self,
+                    flags=0,
+                    message_type=Gtk.MessageType.INFO,
+                    buttons=Gtk.ButtonsType.OK,
+                    text="Daemon Started",
+                )
+                dialog.format_secondary_text(
+                    "The ODSC daemon has been started successfully.\n"
+                    "Your settings are now active."
+                )
+                dialog.run()
+                dialog.destroy()
+            else:
+                logger.error(f"Failed to start daemon: {result.stderr}")
+                self._show_error(f"Failed to start daemon:\n{result.stderr}")
+                
+        except Exception as e:
+            logger.error(f"Error starting daemon: {e}", exc_info=True)
+            self._show_error(f"Error starting daemon:\n{e}")
+    
+    def _create_menubar(self) -> Gtk.MenuBar:
+        """Create menu bar.
+        
+        Returns:
+            MenuBar widget
+        """
+        menubar = Gtk.MenuBar()
+        
+        # Authentication menu
+        auth_menu = Gtk.Menu()
+        auth_item = Gtk.MenuItem(label="Authentication")
+        auth_item.set_submenu(auth_menu)
+        
+        # Login menu item
+        self.login_menu_item = Gtk.MenuItem(label="Login")
+        self.login_menu_item.connect("activate", self._on_login_clicked)
+        auth_menu.append(self.login_menu_item)
+        
+        # Logout menu item
+        self.logout_menu_item = Gtk.MenuItem(label="Logout")
+        self.logout_menu_item.connect("activate", self._on_logout_clicked)
+        auth_menu.append(self.logout_menu_item)
+        
+        # Separator
+        auth_menu.append(Gtk.SeparatorMenuItem())
+        
+        # Authentication Info menu item
+        auth_info_item = Gtk.MenuItem(label="Authentication Info...")
+        auth_info_item.connect("activate", self._on_auth_info_clicked)
+        auth_menu.append(auth_info_item)
+        
+        menubar.append(auth_item)
+        
+        # Settings menu
+        settings_menu = Gtk.Menu()
+        settings_item = Gtk.MenuItem(label="Settings")
+        settings_item.set_submenu(settings_menu)
+        
+        settings_dialog_item = Gtk.MenuItem(label="Preferences...")
+        settings_dialog_item.connect("activate", self._on_settings_clicked)
+        settings_menu.append(settings_dialog_item)
+        
+        menubar.append(settings_item)
+        
+        # Help menu
+        help_menu = Gtk.Menu()
+        help_item = Gtk.MenuItem(label="Help")
+        help_item.set_submenu(help_menu)
+        
+        self.toggle_log_item = Gtk.CheckMenuItem(label="Show Log Panel")
+        self.toggle_log_item.set_active(False)
+        self.toggle_log_item.connect("toggled", self._on_toggle_log_panel)
+        help_menu.append(self.toggle_log_item)
+        
+        help_menu.append(Gtk.SeparatorMenuItem())
+        
+        about_item = Gtk.MenuItem(label="About")
+        about_item.connect("activate", self._on_about_clicked)
+        help_menu.append(about_item)
+        
+        license_item = Gtk.MenuItem(label="License")
+        license_item.connect("activate", self._on_license_clicked)
+        help_menu.append(license_item)
+        
+        menubar.append(help_item)
+        
+        return menubar
+    
+    def _update_auth_menu_state(self) -> None:
+        """Update authentication menu items based on current auth state."""
+        is_authenticated = self.client is not None
+        
+        if self.login_menu_item:
+            self.login_menu_item.set_sensitive(not is_authenticated)
+        if self.logout_menu_item:
+            self.logout_menu_item.set_sensitive(is_authenticated)
+    
+    def _on_login_clicked(self, widget) -> None:
+        """Handle Login menu item click."""
+        self._authenticate()
+    
+    def _on_logout_clicked(self, widget) -> None:
+        """Handle Logout menu item click."""
+        self._logout()
+    
+    def _on_auth_info_clicked(self, widget) -> None:
+        """Handle Authentication Info menu item click."""
+        # Show authentication info dialog (read-only)
         dialog = AuthInfoDialog(self, self.config, self.client)
-        response = dialog.run()
-        
-        if response == Gtk.ResponseType.OK:
-            # User wants to authenticate
-            self._authenticate()
-        elif response == 1:  # Custom response for logout
-            # User wants to log out
-            self._logout()
-        
+        dialog.run()
         dialog.destroy()
     
     def _authenticate(self) -> None:
@@ -314,6 +658,7 @@ class OneDriveGUI(Gtk.Window):
     def _on_auth_success(self) -> None:
         """Handle successful authentication."""
         self._update_status("Authentication successful!")
+        self._update_auth_menu_state()
         self._load_remote_files()
     
     def _logout(self) -> None:
@@ -332,6 +677,7 @@ class OneDriveGUI(Gtk.Window):
         self.keep_local_button.set_sensitive(False)
         self.remove_local_button.set_sensitive(False)
         self._update_status("Logged out successfully")
+        self._update_auth_menu_state()
         
         # Show info dialog
         dialog = Gtk.MessageDialog(
@@ -348,6 +694,42 @@ class OneDriveGUI(Gtk.Window):
     def _on_settings_clicked(self, widget) -> None:
         """Handle settings button click."""
         dialog = SettingsDialog(self, self.config)
+        dialog.run()
+        dialog.destroy()
+    
+    def _on_about_clicked(self, widget) -> None:
+        """Handle About menu item click."""
+        # Open GitHub README in browser
+        webbrowser.open("https://github.com/marlobello/odsc/blob/main/README.md")
+    
+    def _on_license_clicked(self, widget) -> None:
+        """Handle License menu item click."""
+        # Show license dialog
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.CLOSE,
+            text="MIT License",
+        )
+        dialog.format_secondary_text(
+            "Copyright (c) 2026 Marlo Bell\n\n"
+            "Permission is hereby granted, free of charge, to any person obtaining a copy "
+            "of this software and associated documentation files (the \"Software\"), to deal "
+            "in the Software without restriction, including without limitation the rights "
+            "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell "
+            "copies of the Software, and to permit persons to whom the Software is "
+            "furnished to do so, subject to the following conditions:\n\n"
+            "The above copyright notice and this permission notice shall be included in all "
+            "copies or substantial portions of the Software.\n\n"
+            "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR "
+            "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, "
+            "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE "
+            "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER "
+            "LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, "
+            "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE "
+            "SOFTWARE."
+        )
         dialog.run()
         dialog.destroy()
     
@@ -884,6 +1266,41 @@ class AuthInfoDialog(Gtk.Dialog):
             title_label.set_halign(Gtk.Align.START)
             box.add(title_label)
             
+            # Get user info from API
+            user_info = None
+            try:
+                if client:
+                    user_info = client.get_user_info()
+            except Exception as e:
+                logger.warning(f"Could not fetch user info: {e}")
+            
+            # User Name (if available)
+            if user_info and 'displayName' in user_info:
+                name_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                name_label = Gtk.Label(label="User Name:")
+                name_label.set_width_chars(15)
+                name_label.set_halign(Gtk.Align.START)
+                name_value = Gtk.Label(label=user_info['displayName'])
+                name_value.set_halign(Gtk.Align.START)
+                name_box.pack_start(name_label, False, False, 0)
+                name_box.pack_start(name_value, False, False, 0)
+                box.add(name_box)
+            
+            # Email (if available)
+            if user_info:
+                email = user_info.get('mail') or user_info.get('userPrincipalName')
+                if email:
+                    email_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                    email_label = Gtk.Label(label="Email:")
+                    email_label.set_width_chars(15)
+                    email_label.set_halign(Gtk.Align.START)
+                    email_value = Gtk.Label(label=email)
+                    email_value.set_halign(Gtk.Align.START)
+                    email_value.set_selectable(True)
+                    email_box.pack_start(email_label, False, False, 0)
+                    email_box.pack_start(email_value, False, False, 0)
+                    box.add(email_box)
+            
             # Status
             status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             status_label = Gtk.Label(label="Status:")
@@ -895,9 +1312,29 @@ class AuthInfoDialog(Gtk.Dialog):
             status_box.pack_start(status_value, False, False, 0)
             box.add(status_box)
             
-            # Client ID
+            # Last Login Time
+            if token_data and 'expires_at' in token_data and 'expires_in' in token_data:
+                import time
+                from datetime import datetime
+                # Calculate when token was created (expires_at - expires_in)
+                expires_at = token_data['expires_at']
+                expires_in = token_data['expires_in']
+                created_at = expires_at - expires_in
+                login_datetime = datetime.fromtimestamp(created_at)
+                
+                login_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                login_label = Gtk.Label(label="Last Login:")
+                login_label.set_width_chars(15)
+                login_label.set_halign(Gtk.Align.START)
+                login_value = Gtk.Label(label=login_datetime.strftime('%Y-%m-%d %H:%M:%S'))
+                login_value.set_halign(Gtk.Align.START)
+                login_box.pack_start(login_label, False, False, 0)
+                login_box.pack_start(login_value, False, False, 0)
+                box.add(login_box)
+            
+            # Application ID
             client_id_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            client_id_label = Gtk.Label(label="Client ID:")
+            client_id_label = Gtk.Label(label="Application ID:")
             client_id_label.set_width_chars(15)
             client_id_label.set_halign(Gtk.Align.START)
             client_id_value = Gtk.Label(label=client.client_id if client else "Unknown")
@@ -957,10 +1394,8 @@ class AuthInfoDialog(Gtk.Dialog):
             token_file_box.pack_start(token_file_value, False, False, 0)
             box.add(token_file_box)
             
-            # Buttons
-            self.add_button("Log Out", 1)  # Custom response ID
-            self.add_button("Re-authenticate", Gtk.ResponseType.OK)
-            self.add_button("Close", Gtk.ResponseType.CANCEL)
+            # Buttons - just Close
+            self.add_button("Close", Gtk.ResponseType.CLOSE)
             
         else:
             # Not authenticated
@@ -971,16 +1406,16 @@ class AuthInfoDialog(Gtk.Dialog):
             
             info_label = Gtk.Label(
                 label="You are not currently authenticated with OneDrive.\n\n"
-                      "Click 'Authenticate' to log in with your Microsoft account."
+                      "Use Authentication → Login to log in with your Microsoft account."
             )
             info_label.set_halign(Gtk.Align.START)
             info_label.set_line_wrap(True)
             box.add(info_label)
             
-            # Show client ID that will be used
+            # Show application ID that will be used
             client_id = config.client_id or OneDriveClient.DEFAULT_CLIENT_ID
             client_id_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            client_id_label = Gtk.Label(label="Client ID:")
+            client_id_label = Gtk.Label(label="Application ID:")
             client_id_label.set_width_chars(15)
             client_id_label.set_halign(Gtk.Align.START)
             client_id_value = Gtk.Label(label=client_id)
@@ -990,9 +1425,8 @@ class AuthInfoDialog(Gtk.Dialog):
             client_id_box.pack_start(client_id_value, False, False, 0)
             box.add(client_id_box)
             
-            # Buttons
-            self.add_button("Authenticate", Gtk.ResponseType.OK)
-            self.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            # Buttons - just Close
+            self.add_button("Close", Gtk.ResponseType.CLOSE)
         
         self.show_all()
 
@@ -1005,6 +1439,7 @@ class SettingsDialog(Gtk.Dialog):
         Gtk.Dialog.__init__(self, title="Settings", transient_for=parent, flags=0)
         self.add_buttons("Close", Gtk.ResponseType.CLOSE)
         
+        self.parent_window = parent
         self.config = config
         self.set_default_size(400, 200)
         
@@ -1040,25 +1475,140 @@ class SettingsDialog(Gtk.Dialog):
         
         box.add(hbox2)
         
+        # Log level
+        hbox3 = Gtk.Box(spacing=6)
+        label3 = Gtk.Label(label="Log Level:")
+        label3.set_width_chars(20)
+        label3.set_halign(Gtk.Align.START)
+        hbox3.pack_start(label3, False, False, 0)
+        
+        # Create combo box for log levels using ComboBoxText
+        self.log_level_combo = Gtk.ComboBoxText()
+        log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+        for level in log_levels:
+            self.log_level_combo.append_text(level)
+        
+        # Set current log level
+        current_level = config.log_level
+        for i, level in enumerate(log_levels):
+            if level == current_level:
+                self.log_level_combo.set_active(i)
+                break
+        
+        self.log_level_combo.connect("changed", self._on_log_level_changed)
+        hbox3.pack_start(self.log_level_combo, False, False, 0)
+        
+        box.add(hbox3)
+        
         self.show_all()
     
     def _on_sync_dir_changed(self, widget) -> None:
         """Handle sync directory change."""
         path = widget.get_filename()
         if path:
-            self.config.sync_directory = Path(path)
+            old_dir = self.config.sync_directory
+            new_dir = Path(path)
+            
+            # Save to config
+            self.config.sync_directory = new_dir
+            logger.info(f"Sync directory changed from {old_dir} to {new_dir}")
+            
+            # Show confirmation with daemon restart option
+            dialog = Gtk.MessageDialog(
+                transient_for=self.get_transient_for(),
+                flags=0,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.NONE,
+                text="Sync Directory Changed",
+            )
+            dialog.format_secondary_text(
+                f"Sync directory changed to:\n{new_dir}\n\n"
+                "The daemon needs to be restarted for this change to take effect."
+            )
+            dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+            dialog.add_button("Restart Daemon", Gtk.ResponseType.APPLY)
+            
+            response = dialog.run()
+            dialog.destroy()
+            
+            if response == Gtk.ResponseType.APPLY:
+                self.parent_window._restart_daemon()
     
     def _on_interval_changed(self, widget) -> None:
         """Handle sync interval change."""
         value = int(widget.get_value())
         self.config.set('sync_interval', value)
+        logger.info(f"Sync interval changed to {value} seconds")
+        
+        # Show confirmation with daemon restart option
+        dialog = Gtk.MessageDialog(
+            transient_for=self.get_transient_for(),
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.NONE,
+            text="Sync Interval Changed",
+        )
+        dialog.format_secondary_text(
+            f"Sync interval changed to {value} seconds.\n\n"
+            "The daemon needs to be restarted for this change to take effect."
+        )
+        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        dialog.add_button("Restart Daemon", Gtk.ResponseType.APPLY)
+        
+        response = dialog.run()
+        dialog.destroy()
+        
+        if response == Gtk.ResponseType.APPLY:
+            self.parent_window._restart_daemon()
+    
+    def _on_log_level_changed(self, widget) -> None:
+        """Handle log level change."""
+        log_level = widget.get_active_text()
+        if log_level:
+            # Save to config
+            self.config.set('log_level', log_level)
+            
+            # Apply the log level immediately
+            setup_logging(level=log_level, log_file=self.config.log_path)
+            logger.info(f"Log level changed to {log_level} via GUI")
+            
+            # Show confirmation dialog
+            dialog = Gtk.MessageDialog(
+                transient_for=self.get_transient_for(),
+                flags=0,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text="Log Level Changed",
+            )
+            dialog.format_secondary_text(
+                f"Log level changed to {log_level}.\n\n"
+                "The new log level is now active."
+            )
+            dialog.run()
+            dialog.destroy()
+
+
+class OneDriveApplication(Gtk.Application):
+    """GTK Application for OneDrive Sync Client."""
+    
+    def __init__(self):
+        """Initialize application."""
+        super().__init__(application_id="com.github.odsc",
+                         flags=Gio.ApplicationFlags.FLAGS_NONE)
+        self.window = None
+    
+    def do_activate(self):
+        """Activate the application."""
+        if not self.window:
+            self.window = OneDriveGUI(self)
+            self.window.show_all()
+        self.window.present()
 
 
 def main():
     """Main entry point for GUI."""
-    win = OneDriveGUI()
-    win.show_all()
-    Gtk.main()
+    app = OneDriveApplication()
+    app.run(None)
 
 
 if __name__ == '__main__':

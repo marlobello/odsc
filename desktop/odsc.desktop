@@ -9,3 +9,4 @@ Terminal=false
 Categories=Network;FileTransfer;
 Keywords=onedrive;cloud;sync;backup;storage;
 StartupNotify=true
+StartupWMClass=com.github.odsc

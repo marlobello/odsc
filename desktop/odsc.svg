@@ -11,45 +11,42 @@
     </linearGradient>
   </defs>
   
-  <!-- Background circle -->
-  <circle cx="64" cy="64" r="60" fill="url(#cloudGradient)" opacity="0.1"/>
-  
-  <!-- Cloud shape -->
-  <path d="M 38,68 
-           C 38,60 44,54 52,54 
-           C 54,46 60,40 68,40 
-           C 76,40 82,46 84,54 
-           C 92,54 98,60 98,68 
-           C 98,76 92,82 84,82 
-           L 52,82 
-           C 44,82 38,76 38,68 Z" 
+  <!-- Cloud shape - scaled up and centered -->
+  <path d="M 20,70 
+           C 20,54 32,42 46,42 
+           C 50,28 60,18 74,18 
+           C 88,18 98,28 102,42 
+           C 116,42 128,54 128,70 
+           C 128,86 116,98 102,98 
+           L 46,98 
+           C 32,98 20,86 20,70 Z" 
         fill="url(#cloudGradient)" 
         stroke="#005a9e" 
-        stroke-width="2"/>
+        stroke-width="3"/>
   
-  <!-- Sync arrows -->
+  <!-- Sync arrows - larger and more prominent -->
   <!-- Up arrow -->
-  <path d="M 64,95 L 64,75 M 64,75 L 58,81 M 64,75 L 70,81" 
+  <path d="M 74,118 L 74,88 M 74,88 L 64,98 M 74,88 L 84,98" 
         stroke="url(#syncGradient)" 
-        stroke-width="4" 
+        stroke-width="6" 
         stroke-linecap="round" 
         stroke-linejoin="round" 
         fill="none"/>
   
   <!-- Down arrow -->
-  <path d="M 48,33 L 48,53 M 48,53 L 42,47 M 48,53 L 54,47" 
+  <path d="M 44,10 L 44,40 M 44,40 L 34,30 M 44,40 L 54,30" 
         stroke="#50e6ff" 
-        stroke-width="4" 
+        stroke-width="6" 
         stroke-linecap="round" 
         stroke-linejoin="round" 
         fill="none"/>
   
-  <!-- Checkmark overlay (subtle) -->
-  <path d="M 72,60 L 76,64 L 84,52" 
+  <!-- Checkmark overlay - larger and more visible -->
+  <path d="M 82,58 L 88,64 L 102,44" 
         stroke="#00cc6a" 
-        stroke-width="3" 
+        stroke-width="5" 
         stroke-linecap="round" 
         stroke-linejoin="round" 
         fill="none"
-        opacity="0.8"/>
+        opacity="0.9"/>
 </svg>

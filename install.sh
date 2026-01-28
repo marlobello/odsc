@@ -96,7 +96,8 @@ read -p "Do you want to install the desktop application entry? (y/n) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     mkdir -p "$HOME/.local/share/applications"
-    cp desktop/odsc.desktop "$HOME/.local/share/applications/"
+    # Install with application ID name for proper GNOME integration
+    cp desktop/odsc.desktop "$HOME/.local/share/applications/com.github.odsc.desktop"
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
     echo "✓ Desktop entry installed"
 fi

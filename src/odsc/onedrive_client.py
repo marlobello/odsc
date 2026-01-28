@@ -24,7 +24,7 @@ class OneDriveClient:
     TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
     API_BASE = "https://graph.microsoft.com/v1.0"
     REDIRECT_URI = "http://localhost:8080"
-    SCOPES = "files.readwrite offline_access"
+    SCOPES = "files.readwrite offline_access User.Read"
     
     # Default public client ID for ODSC
     # Registered Azure application for OneDrive Consumer (personal accounts)
@@ -174,6 +174,15 @@ class OneDriveClient:
         response = self._session.request(method, url, headers=headers, **kwargs)
         response.raise_for_status()
         return response
+    
+    def get_user_info(self) -> Dict[str, Any]:
+        """Get user profile information.
+        
+        Returns:
+            User profile data including displayName, mail, userPrincipalName, etc.
+        """
+        response = self._api_request('GET', '/me')
+        return response.json()
     
     def list_files(self, path: str = "/") -> List[Dict[str, Any]]:
         """List files in OneDrive directory.
