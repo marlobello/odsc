@@ -58,6 +58,21 @@ class OneDriveGUI(Gtk.Window):
         self.set_default_size(800, 600)
         self.set_border_width(10)
         
+        # Set window icon
+        try:
+            # Try to load from icon theme first
+            self.set_icon_name("odsc")
+        except:
+            # Fallback to loading from file
+            icon_path = Path(__file__).parent.parent.parent / "desktop" / "odsc.svg"
+            if icon_path.exists():
+                try:
+                    from gi.repository import GdkPixbuf
+                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(icon_path), 48, 48)
+                    self.set_icon(pixbuf)
+                except Exception as e:
+                    logger.warning(f"Could not load icon: {e}")
+        
         self.config = Config()
         
         # Setup logging
