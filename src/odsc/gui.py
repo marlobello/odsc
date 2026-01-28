@@ -144,9 +144,11 @@ class OneDriveGUI(Gtk.Window):
         column_modified.set_resizable(True)
         self.file_tree.append_column(column_modified)
         
-        # Column 4: Local checkbox
-        renderer_toggle = Gtk.CellRendererToggle()
-        column_local = Gtk.TreeViewColumn("Local", renderer_toggle, active=4)
+        # Column 4: Local copy status (cloud icon)
+        column_local = Gtk.TreeViewColumn("Local Copy")
+        renderer_cloud = Gtk.CellRendererPixbuf()
+        column_local.pack_start(renderer_cloud, False)
+        column_local.set_cell_data_func(renderer_cloud, self._render_cloud_icon)
         self.file_tree.append_column(column_local)
         
         scrolled.add(self.file_tree)
@@ -158,10 +160,15 @@ class OneDriveGUI(Gtk.Window):
         button_box = Gtk.Box(spacing=6)
         vbox.pack_start(button_box, False, False, 0)
         
-        self.download_button = Gtk.Button(label="Download Selected")
-        self.download_button.connect("clicked", self._on_download_clicked)
-        self.download_button.set_sensitive(False)
-        button_box.pack_start(self.download_button, False, False, 0)
+        self.keep_local_button = Gtk.Button(label="Keep Local Copy")
+        self.keep_local_button.connect("clicked", self._on_keep_local_clicked)
+        self.keep_local_button.set_sensitive(False)
+        button_box.pack_start(self.keep_local_button, False, False, 0)
+        
+        self.remove_local_button = Gtk.Button(label="Remove Local Copy")
+        self.remove_local_button.connect("clicked", self._on_remove_local_clicked)
+        self.remove_local_button.set_sensitive(False)
+        button_box.pack_start(self.remove_local_button, False, False, 0)
         
         self.refresh_button = Gtk.Button(label="Refresh")
         self.refresh_button.connect("clicked", self._on_refresh_clicked)
@@ -170,6 +177,29 @@ class OneDriveGUI(Gtk.Window):
         # Load files if authenticated
         if self.client:
             self._load_remote_files()
+    
+    def _render_cloud_icon(self, column, cell, model, iter, data):
+        """Render cloud icon based on local copy status.
+        
+        Args:
+            column: TreeViewColumn
+            cell: CellRenderer
+            model: TreeModel
+            iter: TreeIter
+            data: User data
+        """
+        is_local = model.get_value(iter, 4)  # Column 4 is local status
+        is_folder = model.get_value(iter, 6)  # Column 6 is folder flag
+        
+        if is_folder:
+            # Don't show cloud icon for folders
+            cell.set_property('icon-name', None)
+        elif is_local:
+            # Filled cloud icon for local copies
+            cell.set_property('icon-name', 'folder-download')
+        else:
+            # Outlined cloud icon for remote-only
+            cell.set_property('icon-name', 'cloud-download-symbolic')
     
     def _create_toolbar(self) -> Gtk.Toolbar:
         """Create toolbar.
@@ -308,11 +338,38 @@ class OneDriveGUI(Gtk.Window):
         """
         if event.type == Gdk.EventType.BUTTON_PRESS:
             selection = self.file_tree.get_selection()
-            self.download_button.set_sensitive(selection.count_selected_rows() > 0)
+            model, paths = selection.get_selected_rows()
+            
+            if paths:
+                # Check what's selected to enable appropriate buttons
+                has_remote_only = False
+                has_local_copy = False
+                
+                for path in paths:
+                    iter = model.get_iter(path)
+                    is_local = model.get_value(iter, 4)
+                    is_folder = model.get_value(iter, 6)
+                    file_id = model.get_value(iter, 5)
+                    
+                    # Skip folders
+                    if is_folder:
+                        continue
+                    
+                    if is_local:
+                        has_local_copy = True
+                    elif file_id:  # Has file_id means it's on OneDrive
+                        has_remote_only = True
+                
+                self.keep_local_button.set_sensitive(has_remote_only)
+                self.remove_local_button.set_sensitive(has_local_copy)
+            else:
+                self.keep_local_button.set_sensitive(False)
+                self.remove_local_button.set_sensitive(False)
+        
         return False
     
-    def _on_download_clicked(self, widget) -> None:
-        """Handle download button click."""
+    def _on_keep_local_clicked(self, widget) -> None:
+        """Handle keep local copy button click."""
         selection = self.file_tree.get_selection()
         model, paths = selection.get_selected_rows()
         
@@ -327,11 +384,86 @@ class OneDriveGUI(Gtk.Window):
             is_folder = model.get_value(iter, 6)
             
             # Skip folders and files that are already local
-            if is_folder:
+            if is_folder or is_local:
                 continue
             
-            if not is_local and file_id:
+            if file_id:
                 self._download_file(file_id, file_name)
+    
+    def _on_remove_local_clicked(self, widget) -> None:
+        """Handle remove local copy button click."""
+        selection = self.file_tree.get_selection()
+        model, paths = selection.get_selected_rows()
+        
+        if not paths:
+            return
+        
+        # Confirm deletion
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text="Remove Local Copy?",
+        )
+        dialog.format_secondary_text(
+            f"Remove local copy of {len(paths)} selected file(s)?\n\n"
+            "Files will remain on OneDrive and can be downloaded again later."
+        )
+        response = dialog.run()
+        dialog.destroy()
+        
+        if response != Gtk.ResponseType.YES:
+            return
+        
+        for path in paths:
+            iter = model.get_iter(path)
+            file_name = model.get_value(iter, 1)
+            file_path_str = model.get_value(iter, 7)  # Full path
+            is_local = model.get_value(iter, 4)
+            is_folder = model.get_value(iter, 6)
+            
+            # Skip folders and files that aren't local
+            if is_folder or not is_local:
+                continue
+            
+            self._remove_local_file(file_path_str, file_name)
+    
+    def _remove_local_file(self, rel_path: str, file_name: str) -> None:
+        """Remove local copy of a file.
+        
+        Args:
+            rel_path: Relative path to file
+            file_name: File name for display
+        """
+        self._update_status(f"Removing local copy of {file_name}...")
+        
+        def remove_in_thread():
+            try:
+                local_path = self.config.sync_directory / rel_path
+                
+                if local_path.exists():
+                    local_path.unlink()
+                    logger.info(f"Removed local copy: {rel_path}")
+                    
+                    # Update sync state to mark as not downloaded
+                    state = self.config.load_state()
+                    if 'files' in state and rel_path in state['files']:
+                        state['files'][rel_path]['downloaded'] = False
+                        self.config.save_state(state)
+                    
+                    GLib.idle_add(self._update_status, f"Removed local copy of {file_name}")
+                    GLib.idle_add(self._load_remote_files)  # Refresh
+                else:
+                    logger.warning(f"File not found locally: {rel_path}")
+                    GLib.idle_add(self._update_status, "File not found locally")
+                    
+            except Exception as e:
+                logger.error(f"Failed to remove local copy of {file_name}: {e}")
+                GLib.idle_add(self._show_error, f"Failed to remove: {e}")
+        
+        thread = threading.Thread(target=remove_in_thread, daemon=True)
+        thread.start()
     
     def _on_refresh_clicked(self, widget) -> None:
         """Handle refresh button click."""
