@@ -144,12 +144,12 @@ class OneDriveGUI(Gtk.Window):
         column_modified.set_resizable(True)
         self.file_tree.append_column(column_modified)
         
-        # Column 4: Local copy status (cloud icon)
-        column_local = Gtk.TreeViewColumn("Local Copy")
-        renderer_cloud = Gtk.CellRendererPixbuf()
-        column_local.pack_start(renderer_cloud, False)
-        column_local.set_cell_data_func(renderer_cloud, self._render_cloud_icon)
-        self.file_tree.append_column(column_local)
+        # Column 4: Status (OneDrive-style sync status)
+        column_status = Gtk.TreeViewColumn("Status")
+        renderer_status = Gtk.CellRendererPixbuf()
+        column_status.pack_start(renderer_status, False)
+        column_status.set_cell_data_func(renderer_status, self._render_status_icon)
+        self.file_tree.append_column(column_status)
         
         scrolled.add(self.file_tree)
         
@@ -179,8 +179,8 @@ class OneDriveGUI(Gtk.Window):
         if self.client:
             self._load_remote_files()
     
-    def _render_cloud_icon(self, column, cell, model, iter, data):
-        """Render cloud icon based on local copy status.
+    def _render_status_icon(self, column, cell, model, iter, data):
+        """Render OneDrive-style status icon.
         
         Args:
             column: TreeViewColumn
@@ -191,16 +191,20 @@ class OneDriveGUI(Gtk.Window):
         """
         is_local = model.get_value(iter, 4)  # Column 4 is local status
         is_folder = model.get_value(iter, 6)  # Column 6 is folder flag
+        file_name = model.get_value(iter, 1)  # Column 1 is name
         
         if is_folder:
-            # Don't show cloud icon for folders
+            # Don't show status icon for folders
             cell.set_property('icon-name', None)
+        elif "(pending upload)" in file_name:
+            # Blue sync icon for pending uploads
+            cell.set_property('icon-name', 'emblem-synchronizing')
         elif is_local:
-            # Filled cloud icon for local copies
-            cell.set_property('icon-name', 'folder-download')
+            # Green checkmark for synced files (local copy exists)
+            cell.set_property('icon-name', 'emblem-default')
         else:
-            # Outlined cloud icon for remote-only
-            cell.set_property('icon-name', 'cloud-download-symbolic')
+            # Blue cloud for online-only files (not downloaded)
+            cell.set_property('icon-name', 'weather-few-clouds')
     
     def _create_toolbar(self) -> Gtk.Toolbar:
         """Create toolbar.
