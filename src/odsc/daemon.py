@@ -270,10 +270,11 @@ class SyncDaemon:
                         'size': local_info['size'],
                         'eTag': metadata.get('eTag', ''),
                         'remote_modified': metadata.get('lastModifiedDateTime', ''),
+                        'downloaded': True,  # We created it locally, so mark as downloaded
                     }
                     
                 elif action == 'download':
-                    logger.info(f"Downloading: {rel_path}")
+                    logger.info(f"Downloading updated version: {rel_path}")
                     local_path = sync_dir / rel_path
                     metadata = self.client.download_file(remote_info['id'], local_path)
                     self.state['files'][rel_path] = {
@@ -281,7 +282,15 @@ class SyncDaemon:
                         'size': remote_info['size'],
                         'eTag': remote_info['eTag'],
                         'remote_modified': remote_info['lastModifiedDateTime'],
+                        'downloaded': True,
                     }
+                    
+                elif action == 'recycle':
+                    logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
+                    self._move_to_recycle_bin(local_info['path'], rel_path)
+                    # Remove from state
+                    if rel_path in self.state['files']:
+                        del self.state['files'][rel_path]
                     
                 elif action == 'conflict':
                     logger.warning(f"CONFLICT detected for {rel_path} - keeping both versions")
@@ -300,6 +309,9 @@ class SyncDaemon:
         self.state['last_sync'] = datetime.now().isoformat()
         self.config.save_state(self.state)
         
+        # Clean up old files from recycle bin
+        self._cleanup_recycle_bin()
+        
         logger.info("Periodic sync completed")
     
     def _determine_sync_action(self, rel_path: str, local_info: Optional[Dict], 
@@ -313,7 +325,7 @@ class SyncDaemon:
             state_entry: Last known sync state
             
         Returns:
-            Action: 'upload', 'download', 'conflict', or 'skip'
+            Action: 'upload', 'download', 'conflict', 'recycle', or 'skip'
         """
         # Case 1: File only exists locally (new local file)
         if local_info and not remote_info:
@@ -322,34 +334,48 @@ class SyncDaemon:
                 return 'upload'
             elif state_entry.get('eTag'):
                 # Was synced before but now missing remotely (deleted remotely)
-                logger.info(f"{rel_path} was deleted remotely, keeping local")
-                return 'skip'
+                logger.info(f"{rel_path} was deleted remotely, moving to recycle bin")
+                return 'recycle'
             else:
                 return 'upload'
         
         # Case 2: File only exists remotely (new remote file or deleted locally)
         if remote_info and not local_info:
             if not state_entry:
-                # Never synced before, download it
-                return 'download'
-            elif state_entry.get('mtime'):
-                # Was synced before but now deleted locally (user deleted)
+                # Never synced before - user must manually download
+                logger.debug(f"{rel_path} is new on OneDrive, awaiting user download")
+                return 'skip'
+            elif state_entry.get('downloaded') and state_entry.get('mtime'):
+                # Was downloaded before but now deleted locally (user deleted)
+                logger.info(f"{rel_path} was deleted locally, keeping deleted")
+                return 'skip'
+            elif state_entry.get('eTag'):
+                # Was synced/uploaded but deleted locally (user deleted)
                 logger.info(f"{rel_path} was deleted locally, keeping deleted")
                 return 'skip'
             else:
-                return 'download'
+                # No clear state, skip (require manual download)
+                return 'skip'
         
         # Case 3: File exists both locally and remotely
         if local_info and remote_info:
             # Check if we've synced this file before
             if not state_entry:
-                # No sync state - compare by size
+                # No sync state - this shouldn't happen in normal flow
+                # Could be user manually added file that already exists remotely
                 if local_info['size'] == remote_info['size']:
                     # Assume same, record state
+                    logger.info(f"{rel_path} exists both places with same size, assuming synced")
                     return 'skip'
                 else:
-                    # Different sizes, potential conflict - prefer newer
+                    # Different sizes, potential conflict
                     return 'conflict'
+            
+            # Only sync if file was explicitly downloaded by user or uploaded by us
+            if not state_entry.get('downloaded'):
+                # User never downloaded this, skip syncing
+                logger.debug(f"{rel_path} not marked as downloaded, skipping sync")
+                return 'skip'
             
             # Check if local file changed since last sync
             local_changed = (

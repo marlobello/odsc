@@ -593,9 +593,27 @@ class OneDriveGUI(Gtk.Window):
                 if parent_path:
                     parent_path = parent_path.replace('/drive/root:', '')
                 
-                local_path = self.config.sync_directory / parent_path.lstrip('/') / file_name
-                self.client.download_file(file_id, local_path)
+                rel_path = (parent_path.lstrip('/') + '/' + file_name) if parent_path else file_name
+                local_path = self.config.sync_directory / rel_path
                 
+                # Download file
+                metadata = self.client.download_file(file_id, local_path)
+                
+                # Update sync state to mark as downloaded
+                state = self.config.load_state()
+                if 'files' not in state:
+                    state['files'] = {}
+                
+                state['files'][rel_path] = {
+                    'mtime': local_path.stat().st_mtime,
+                    'size': file_info.get('size', 0),
+                    'eTag': metadata.get('eTag', ''),
+                    'remote_modified': metadata.get('lastModifiedDateTime', ''),
+                    'downloaded': True,  # Mark as explicitly downloaded by user
+                }
+                self.config.save_state(state)
+                
+                logger.info(f"Downloaded and marked for sync: {rel_path}")
                 GLib.idle_add(self._update_status, f"Downloaded {file_name}")
                 GLib.idle_add(self._load_remote_files)  # Refresh to update local status
             except Exception as e:

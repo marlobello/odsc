@@ -171,9 +171,33 @@ grep ERROR ~/.config/odsc/odsc.log
 
 ## File Sync Behavior
 
-- **Upload**: Files created or modified in the sync directory are automatically uploaded to OneDrive
-- **Download**: Files are NOT automatically downloaded; use the GUI to selectively download files
-- **Delete**: Local deletions do NOT delete files from OneDrive (safety feature)
+### Upload (Automatic)
+- Files created or modified in the sync directory are automatically uploaded to OneDrive
+- Changes are detected in real-time via file system monitoring
+- Periodic full scans ensure no changes are missed
+
+### Download (Manual, Then Synced)
+- **New files on OneDrive are NOT automatically downloaded**
+- Use the GUI to selectively download files you want locally
+- Once downloaded, those files are automatically kept in sync
+- Remote updates to downloaded files are automatically synced
+
+### Remote Deletions
+- When a file is deleted on OneDrive that exists locally:
+  - Local copy is moved to `~/OneDrive/.local_recycle_bin/`
+  - Organized by timestamp folder
+  - Automatically deleted after 90 days
+  - Prevents accidental data loss
+
+### Local Deletions
+- Local deletions do NOT delete files from OneDrive (safety feature)
+- Deleted files remain on OneDrive
+
+### Conflict Resolution
+- If both local and remote versions change, both are kept:
+  - Local version remains as-is
+  - Remote version is saved as `filename.conflict`
+  - User can manually resolve the conflict
 
 ## Troubleshooting
 
