@@ -27,7 +27,7 @@ echo "✓ Python $python_version found"
 
 # Install system dependencies
 echo ""
-echo "Installing system dependencies..."
+echo "Installing system dependencies and Python packages..."
 if command -v apt-get &> /dev/null; then
     sudo apt-get update
     sudo apt-get install -y \
@@ -35,24 +35,30 @@ if command -v apt-get &> /dev/null; then
         python3-gi \
         python3-gi-cairo \
         gir1.2-gtk-3.0 \
-        python3-dbus
-    echo "✓ System dependencies installed"
+        python3-dbus \
+        python3-requests \
+        python3-watchdog \
+        python3-dateutil
+    echo "✓ System dependencies and Python packages installed"
 elif command -v dnf &> /dev/null; then
     sudo dnf install -y \
         python3-pip \
         python3-gobject \
         gtk3 \
-        python3-dbus
-    echo "✓ System dependencies installed"
+        python3-dbus \
+        python3-requests \
+        python3-watchdog \
+        python3-dateutil
+    echo "✓ System dependencies and Python packages installed"
 else
-    echo "Warning: Could not detect package manager. Please install GTK3 and Python GObject bindings manually."
+    echo "Warning: Could not detect package manager. Please install dependencies manually."
 fi
 
-# Install Python package
+# Install ODSC package (setup.py only installs entry points, not dependencies)
 echo ""
-echo "Installing ODSC Python package..."
-pip3 install --user -e .
-echo "✓ Python package installed"
+echo "Installing ODSC entry points..."
+pip3 install --user --break-system-packages -e . --no-deps
+echo "✓ ODSC installed"
 
 # Create sync directory
 echo ""

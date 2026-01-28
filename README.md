@@ -24,7 +24,7 @@ A Ubuntu/GNOME-based sync client for Microsoft OneDrive (personal) that runs as 
 
 ```bash
 sudo apt-get update
-sudo apt-get install python3 python3-pip python3-gi python3-gi-cairo gir1.2-gtk-3.0 python3-dbus
+sudo apt-get install python3 python3-pip python3-gi python3-gi-cairo gir1.2-gtk-3.0 python3-dbus python3-requests python3-watchdog python3-dateutil
 ```
 
 ### 2. Clone Repository
@@ -34,33 +34,23 @@ git clone https://github.com/marlobello/odsc.git
 cd odsc
 ```
 
-### 3. Install Python Package
+### 3. Install ODSC Package
 
 **Option A: Using the install script (recommended)**:
 ```bash
 ./install.sh
 ```
+This installs all dependencies via apt and only uses pip for ODSC entry points.
 
 **Option B: Manual installation**:
 
-If you encounter an `externally-managed-environment` error, use one of these methods:
+After installing system dependencies, install ODSC:
 
-1. Install with `--user` flag (recommended for system Python):
-   ```bash
-   pip3 install --user -e .
-   ```
+```bash
+pip3 install --user --break-system-packages -e . --no-deps
+```
 
-2. Or create a virtual environment (recommended for development):
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -e .
-   ```
-
-3. Or install dependencies manually:
-   ```bash
-   pip3 install --user -r requirements.txt
-   ```
+The `--no-deps` flag ensures only ODSC is installed via pip, using system packages for dependencies.
 
 ## Usage
 
