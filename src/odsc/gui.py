@@ -176,8 +176,18 @@ class OneDriveGUI(Gtk.Window):
     
     def _on_auth_clicked(self, widget) -> None:
         """Handle authentication button click."""
-        # Simply start authentication without asking for client ID
-        self._authenticate()
+        # Show authentication info dialog
+        dialog = AuthInfoDialog(self, self.config, self.client)
+        response = dialog.run()
+        
+        if response == Gtk.ResponseType.OK:
+            # User wants to authenticate
+            self._authenticate()
+        elif response == 1:  # Custom response for logout
+            # User wants to log out
+            self._logout()
+        
+        dialog.destroy()
     
     def _authenticate(self) -> None:
         """Perform OneDrive authentication."""
@@ -222,6 +232,34 @@ class OneDriveGUI(Gtk.Window):
         """Handle successful authentication."""
         self._update_status("Authentication successful!")
         self._load_remote_files()
+    
+    def _logout(self) -> None:
+        """Log out and clear authentication."""
+        # Remove token file
+        if self.config.token_path.exists():
+            self.config.token_path.unlink()
+        
+        # Clear client
+        self.client = None
+        
+        # Clear file list
+        self.file_store.clear()
+        
+        # Update UI
+        self.download_button.set_sensitive(False)
+        self._update_status("Logged out successfully")
+        
+        # Show info dialog
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text="Logged Out",
+        )
+        dialog.format_secondary_text("You have been logged out successfully.")
+        dialog.run()
+        dialog.destroy()
     
     def _on_settings_clicked(self, widget) -> None:
         """Handle settings button click."""
@@ -380,33 +418,147 @@ class OneDriveGUI(Gtk.Window):
         dialog.destroy()
 
 
-class AuthDialog(Gtk.Dialog):
-    """Authentication configuration dialog."""
+class AuthInfoDialog(Gtk.Dialog):
+    """Authentication information and management dialog."""
     
-    def __init__(self, parent):
-        """Initialize dialog."""
-        Gtk.Dialog.__init__(self, title="OneDrive Authentication", transient_for=parent, flags=0)
-        self.add_buttons(
-            "Cancel", Gtk.ResponseType.CANCEL,
-            "OK", Gtk.ResponseType.OK
-        )
+    def __init__(self, parent, config: Config, client: Optional[OneDriveClient]):
+        """Initialize dialog.
         
-        self.set_default_size(400, 150)
+        Args:
+            parent: Parent window
+            config: Configuration object
+            client: OneDrive client (None if not authenticated)
+        """
+        Gtk.Dialog.__init__(self, title="Authentication", transient_for=parent, flags=0)
+        
+        self.config = config
+        self.client = client
+        self.set_default_size(500, 300)
+        self.set_border_width(10)
         
         box = self.get_content_area()
+        box.set_spacing(10)
         
-        label = Gtk.Label(label="Enter your Microsoft Application Client ID:")
-        box.add(label)
+        # Check if authenticated
+        token_data = config.load_token()
+        is_authenticated = token_data is not None and client is not None
         
-        self.client_id_entry = Gtk.Entry()
-        box.add(self.client_id_entry)
-        
-        info_label = Gtk.Label()
-        info_label.set_markup(
-            '<small>Get a Client ID at: '
-            '<a href="https://portal.azure.com">Azure Portal</a></small>'
-        )
-        box.add(info_label)
+        if is_authenticated:
+            # Show authentication info
+            title_label = Gtk.Label()
+            title_label.set_markup("<b>Authentication Status</b>")
+            title_label.set_halign(Gtk.Align.START)
+            box.add(title_label)
+            
+            # Status
+            status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            status_label = Gtk.Label(label="Status:")
+            status_label.set_width_chars(15)
+            status_label.set_halign(Gtk.Align.START)
+            status_value = Gtk.Label(label="✓ Authenticated")
+            status_value.set_halign(Gtk.Align.START)
+            status_box.pack_start(status_label, False, False, 0)
+            status_box.pack_start(status_value, False, False, 0)
+            box.add(status_box)
+            
+            # Client ID
+            client_id_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            client_id_label = Gtk.Label(label="Client ID:")
+            client_id_label.set_width_chars(15)
+            client_id_label.set_halign(Gtk.Align.START)
+            client_id_value = Gtk.Label(label=client.client_id if client else "Unknown")
+            client_id_value.set_halign(Gtk.Align.START)
+            client_id_value.set_selectable(True)
+            client_id_box.pack_start(client_id_label, False, False, 0)
+            client_id_box.pack_start(client_id_value, False, False, 0)
+            box.add(client_id_box)
+            
+            # Token expiry info
+            if token_data and 'expires_at' in token_data:
+                import time
+                from datetime import datetime
+                expires_at = token_data['expires_at']
+                expires_datetime = datetime.fromtimestamp(expires_at)
+                time_remaining = expires_at - time.time()
+                
+                expiry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                expiry_label = Gtk.Label(label="Token Expires:")
+                expiry_label.set_width_chars(15)
+                expiry_label.set_halign(Gtk.Align.START)
+                
+                if time_remaining > 0:
+                    hours = int(time_remaining / 3600)
+                    expiry_text = f"{expires_datetime.strftime('%Y-%m-%d %H:%M')} ({hours}h remaining)"
+                else:
+                    expiry_text = "Expired (will auto-refresh)"
+                
+                expiry_value = Gtk.Label(label=expiry_text)
+                expiry_value.set_halign(Gtk.Align.START)
+                expiry_box.pack_start(expiry_label, False, False, 0)
+                expiry_box.pack_start(expiry_value, False, False, 0)
+                box.add(expiry_box)
+            
+            # Has refresh token?
+            if token_data and 'refresh_token' in token_data:
+                refresh_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                refresh_label = Gtk.Label(label="Refresh Token:")
+                refresh_label.set_width_chars(15)
+                refresh_label.set_halign(Gtk.Align.START)
+                refresh_value = Gtk.Label(label="✓ Available")
+                refresh_value.set_halign(Gtk.Align.START)
+                refresh_box.pack_start(refresh_label, False, False, 0)
+                refresh_box.pack_start(refresh_value, False, False, 0)
+                box.add(refresh_box)
+            
+            # Token file location
+            token_file_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            token_file_label = Gtk.Label(label="Token File:")
+            token_file_label.set_width_chars(15)
+            token_file_label.set_halign(Gtk.Align.START)
+            token_file_value = Gtk.Label(label=str(config.token_path))
+            token_file_value.set_halign(Gtk.Align.START)
+            token_file_value.set_selectable(True)
+            token_file_value.set_line_wrap(True)
+            token_file_box.pack_start(token_file_label, False, False, 0)
+            token_file_box.pack_start(token_file_value, False, False, 0)
+            box.add(token_file_box)
+            
+            # Buttons
+            self.add_button("Log Out", 1)  # Custom response ID
+            self.add_button("Re-authenticate", Gtk.ResponseType.OK)
+            self.add_button("Close", Gtk.ResponseType.CANCEL)
+            
+        else:
+            # Not authenticated
+            title_label = Gtk.Label()
+            title_label.set_markup("<b>Not Authenticated</b>")
+            title_label.set_halign(Gtk.Align.START)
+            box.add(title_label)
+            
+            info_label = Gtk.Label(
+                label="You are not currently authenticated with OneDrive.\n\n"
+                      "Click 'Authenticate' to log in with your Microsoft account."
+            )
+            info_label.set_halign(Gtk.Align.START)
+            info_label.set_line_wrap(True)
+            box.add(info_label)
+            
+            # Show client ID that will be used
+            client_id = config.client_id or OneDriveClient.DEFAULT_CLIENT_ID
+            client_id_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            client_id_label = Gtk.Label(label="Client ID:")
+            client_id_label.set_width_chars(15)
+            client_id_label.set_halign(Gtk.Align.START)
+            client_id_value = Gtk.Label(label=client_id)
+            client_id_value.set_halign(Gtk.Align.START)
+            client_id_value.set_selectable(True)
+            client_id_box.pack_start(client_id_label, False, False, 0)
+            client_id_box.pack_start(client_id_value, False, False, 0)
+            box.add(client_id_box)
+            
+            # Buttons
+            self.add_button("Authenticate", Gtk.ResponseType.OK)
+            self.add_button("Cancel", Gtk.ResponseType.CANCEL)
         
         self.show_all()
 
