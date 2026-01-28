@@ -42,7 +42,13 @@ odsc-daemon
 
 ### Option 2: Systemd Service (Auto-start)
 
+If you used `./install.sh`, the systemd service should already be installed. Otherwise:
+
 ```bash
+# Install service file (if not done by install.sh)
+mkdir -p ~/.config/systemd/user/
+cp systemd/odsc.service ~/.config/systemd/user/
+
 # Enable and start service
 systemctl --user enable odsc
 systemctl --user start odsc
@@ -58,12 +64,20 @@ journalctl --user -u odsc -f
 
 ### View OneDrive Files
 - The main window shows all files in your OneDrive
-- **Local** checkbox indicates if file is downloaded
+- **Local** checkbox indicates if file has a local copy
 
-### Download Files
+### Keep Local Copy (Download)
 1. Select files that aren't downloaded (Local checkbox is unchecked)
-2. Click **Download Selected**
+2. Click **Keep Local Copy**
 3. Files are downloaded to your sync directory
+4. Files will now be automatically kept in sync
+
+### Remove Local Copy
+1. Select files that are downloaded (Local checkbox is checked)
+2. Click **Remove Local Copy**
+3. Local copy deleted, but file remains on OneDrive
+4. File stops being automatically synced
+5. Can be re-downloaded anytime
 
 ### Upload Files
 - Simply copy files to your sync directory (e.g., `~/OneDrive`)
@@ -75,9 +89,13 @@ journalctl --user -u odsc -f
 ## Tips
 
 - Files are **uploaded automatically** when added to sync directory
-- Files are **downloaded manually** via the GUI (selective sync)
+- Files are **downloaded manually** via "Keep Local Copy" button (selective sync)
+- Once downloaded, files are **automatically kept in sync** with OneDrive
 - Local deletions do **NOT** delete from OneDrive (safety feature)
+- Remote deletions move local files to **system trash** (recoverable)
+- Conflicts create **`.conflict`** files (both versions preserved)
 - Monitor sync status via: `systemctl --user status odsc`
+- View logs: `journalctl --user -u odsc -f` or `~/.config/odsc/odsc.log`
 
 ## Troubleshooting
 
@@ -104,7 +122,10 @@ Edit `~/.config/odsc/config.json` directly:
 {
   "sync_directory": "/home/user/OneDrive",
   "sync_interval": 300,
-  "client_id": "your-azure-client-id"
+  "client_id": "",
+  "auto_start": false,
+  "log_level": "INFO"
+}
 }
 ```
 

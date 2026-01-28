@@ -195,15 +195,6 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         menubar = self._create_menubar()
         vbox.pack_start(menubar, False, False, 0)
         
-        # Status bar (add spacing back)
-        status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        vbox.pack_start(status_box, False, False, 0)
-        
-        self.status_label = Gtk.Label()
-        self.status_label.set_markup("<i>Status: Ready</i>")
-        self.status_label.set_halign(Gtk.Align.START)
-        status_box.pack_start(self.status_label, False, False, 0)
-        
         # Create paned widget to hold main content and log panel
         self.main_paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
         vbox.pack_start(self.main_paned, True, True, 0)
@@ -222,35 +213,46 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         self.file_tree = Gtk.TreeView(model=self.file_store)
         self.file_tree.set_enable_tree_lines(True)
         
-        # Column 1: Icon + Name
+        # Column 1: Icon + Name (left-aligned)
         column_name = Gtk.TreeViewColumn("Name")
         
         # Icon renderer
         renderer_icon = Gtk.CellRendererPixbuf()
+        renderer_icon.set_padding(4, 2)  # horizontal, vertical padding
         column_name.pack_start(renderer_icon, False)
         column_name.add_attribute(renderer_icon, "icon-name", 0)
         
-        # Text renderer
-        renderer_text = Gtk.CellRendererText()
-        column_name.pack_start(renderer_text, True)
-        column_name.add_attribute(renderer_text, "text", 1)
+        # Text renderer for name
+        renderer_name = Gtk.CellRendererText()
+        renderer_name.set_padding(6, 4)  # horizontal, vertical padding
+        column_name.pack_start(renderer_name, True)
+        column_name.add_attribute(renderer_name, "text", 1)
         column_name.set_resizable(True)
         column_name.set_min_width(300)
         self.file_tree.append_column(column_name)
         
-        # Column 2: Size
-        column_size = Gtk.TreeViewColumn("Size", renderer_text, text=2)
+        # Column 2: Size (right-aligned for numbers)
+        renderer_size = Gtk.CellRendererText()
+        renderer_size.set_padding(8, 4)  # horizontal, vertical padding
+        renderer_size.set_alignment(1.0, 0.5)  # right-aligned, vertically centered
+        column_size = Gtk.TreeViewColumn("Size", renderer_size, text=2)
+        column_size.set_alignment(1.0)  # right-align header too
         column_size.set_resizable(True)
         self.file_tree.append_column(column_size)
         
-        # Column 3: Modified
-        column_modified = Gtk.TreeViewColumn("Modified", renderer_text, text=3)
+        # Column 3: Modified (left-aligned for dates)
+        renderer_modified = Gtk.CellRendererText()
+        renderer_modified.set_padding(8, 4)  # horizontal, vertical padding
+        column_modified = Gtk.TreeViewColumn("Modified", renderer_modified, text=3)
         column_modified.set_resizable(True)
         self.file_tree.append_column(column_modified)
         
-        # Column 4: Status (OneDrive-style sync status)
+        # Column 4: Status (centered icon)
         column_status = Gtk.TreeViewColumn("Status")
+        column_status.set_alignment(0.5)  # center header
         renderer_status = Gtk.CellRendererPixbuf()
+        renderer_status.set_padding(8, 4)  # horizontal, vertical padding
+        renderer_status.set_alignment(0.5, 0.5)  # center icon horizontally and vertically
         column_status.pack_start(renderer_status, False)
         column_status.set_cell_data_func(renderer_status, self._render_status_icon)
         self.file_tree.append_column(column_status)
@@ -278,6 +280,12 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         self.refresh_button = Gtk.Button(label="Refresh")
         self.refresh_button.connect("clicked", self._on_refresh_clicked)
         button_box.pack_start(self.refresh_button, False, False, 0)
+        
+        # Status label - right-justified next to Refresh button
+        self.status_label = Gtk.Label()
+        self.status_label.set_markup("<i>Status: Ready</i>")
+        self.status_label.set_halign(Gtk.Align.END)
+        button_box.pack_end(self.status_label, False, False, 6)
         
         # Create log panel (bottom pane) - initially hidden
         self._create_log_panel()
@@ -310,8 +318,8 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             # Green checkmark for synced files (local copy exists)
             cell.set_property('icon-name', 'emblem-default')
         else:
-            # Blue cloud for online-only files (not downloaded)
-            cell.set_property('icon-name', 'weather-few-clouds')
+            # Overcast cloud icon for online-only files (not downloaded)
+            cell.set_property('icon-name', 'weather-overcast')
     
     def _create_log_panel(self) -> None:
         """Create the log panel (initially hidden)."""

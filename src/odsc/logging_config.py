@@ -5,6 +5,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import Optional
+from logging.handlers import RotatingFileHandler
 
 
 def setup_logging(level: Optional[str] = None, log_file: Optional[Path] = None) -> None:
@@ -53,10 +54,16 @@ def setup_logging(level: Optional[str] = None, log_file: Optional[Path] = None) 
     
     root_logger.addHandler(console_handler)
     
-    # File handler (if specified)
+    # File handler (if specified) with rotation
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
+        # Rotate logs: 10 MB max size, keep 5 backup files (total ~50 MB)
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=5,
+            encoding='utf-8'
+        )
         file_handler.setLevel(logging.DEBUG)  # Always log everything to file
         file_handler.setFormatter(detailed_formatter)
         root_logger.addHandler(file_handler)

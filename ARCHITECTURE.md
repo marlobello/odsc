@@ -54,9 +54,10 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 - Uses JSON files in `~/.config/odsc/`
 
 **Files**:
-- `config.json`: User settings
-- `.onedrive_token`: OAuth credentials (sensitive)
-- `sync_state.json`: Sync metadata
+- `config.json`: User settings (sync_directory, sync_interval, log_level, client_id)
+- `.onedrive_token`: Encrypted OAuth credentials (uses keyring + cryptography)
+- `sync_state.json`: Sync metadata (file mtime, size, eTag, downloaded status)
+- `odsc.log`: Application logs
 
 ### 2. OneDrive Client (`onedrive_client.py`)
 
@@ -79,21 +80,25 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 
 **Key Features**:
 - **Event-driven sync**: Monitors file system changes using Watchdog
-- **Periodic sync**: Full scan at configurable intervals
-- **Upload-only**: Automatically uploads new/modified files
-- **State tracking**: Maintains file modification times to avoid re-uploads
+- **Periodic two-way sync**: Full scan at configurable intervals (default: 5 minutes)
+- **Automatic uploads**: New/modified local files uploaded to OneDrive
+- **Selective downloads**: Only syncs files user has marked as "downloaded"
+- **State tracking**: Maintains file metadata to detect changes
 - **Thread-safe**: Uses locks for concurrent access
+- **Conflict detection**: Identifies simultaneous local and remote changes
 
 **Sync Logic**:
-1. **File Event**: Watchdog detects change → Queue for sync
-2. **Periodic Check**: Every N seconds, scan all files
-3. **Upload Decision**: Compare local mtime with stored mtime
-4. **Upload**: Send to OneDrive via API
-5. **Update State**: Record new mtime
+1. **File Event**: Watchdog detects local change → Queue for sync
+2. **Periodic Check**: Every N seconds, scan all local and remote files
+3. **Change Detection**: Compare local mtime, remote eTag against stored state
+4. **Sync Decision**: Determine action (upload, download, conflict, skip)
+5. **Execute**: Perform upload/download/conflict resolution
+6. **Update State**: Record new metadata for synced files
 
 **Design Decisions**:
-- **Upload-only by default**: Prevents accidental data loss
-- **No auto-delete**: Local deletions don't affect OneDrive
+- **Selective sync**: Remote files not auto-downloaded (user must opt-in via GUI)
+- **Safe deletions**: Local deletions don't affect OneDrive, remote deletions move to trash
+- **Conflict preservation**: Both versions kept when simultaneous edits occur
 - **Debouncing**: Batch rapid changes before uploading
 
 ### 4. GNOME GUI (`gui.py`)
@@ -101,22 +106,23 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 **Responsibility**: User interface for viewing and managing OneDrive files.
 
 **Key Features**:
-- **Authentication**: OAuth flow with local callback server
-- **File Browser**: TreeView showing all OneDrive files
-- **Selective Download**: User-initiated downloads only
-- **Status Indicators**: Shows which files are local
-- **Settings**: Configure sync directory and interval
+- **Authentication**: OAuth flow with local callback server (port 8080)
+- **File Browser**: TreeView showing all OneDrive files with status
+- **"Keep Local Copy"**: Download files and enable automatic sync
+- **"Remove Local Copy"**: Delete local file, keep on OneDrive, disable sync
+- **Status Indicators**: Checkbox shows which files have local copies
+- **Settings**: Configure sync directory, interval, and logging
+- **Refresh**: Manual update of file list from OneDrive
 
 **UI Components**:
-- Main window with toolbar
-- File list (TreeView)
-- Settings dialog
+- Main window with toolbar (Authenticate, Settings, Refresh)
+- File list (TreeView with columns: Name, Size, Modified, Local Status)
+- Action buttons: "Keep Local Copy", "Remove Local Copy"
+- Settings dialog (sync directory, sync interval, log level)
 - Status bar
 
-**Note**: Authentication dialog removed - authentication is now direct (one-click)
-
 **Threading Model**:
-- UI runs on main thread
+- UI runs on main thread (GTK requirement)
 - API calls run on background threads
 - Use `GLib.idle_add()` for thread-safe UI updates
 
@@ -193,10 +199,12 @@ Store Token + Refresh Token
 
 ### Conflict Resolution
 
-Currently **not implemented**. Plans for future:
-- Last-write-wins strategy
-- Optional conflict files (.conflict)
-- User notification for conflicts
+**Implemented** - When both local and remote versions of a file are modified:
+- Both versions are preserved
+- Local version remains unchanged at original path
+- Remote version downloaded as `filename.conflict`
+- User manually resolves by reviewing both versions
+- System makes no assumptions about which version is correct
 
 ## Security Considerations
 
@@ -297,25 +305,26 @@ Future consideration: Plugin system for:
 
 ## Future Enhancements
 
-1. **Conflict Resolution**: Detect and handle file conflicts
-2. **Two-way Sync**: Download changes from OneDrive
-3. **Bandwidth Control**: Limit upload/download speed
-4. **File Exclusions**: Ignore patterns (.gitignore style)
-5. **System Tray**: Minimize to tray with status icon
-6. **Notifications**: Desktop notifications for sync events
-7. **Multi-account**: Support multiple OneDrive accounts
-8. **Sharing**: Manage OneDrive sharing from GUI
-9. **Offline Mode**: Queue operations when offline
-10. **Delta Sync**: Use OneDrive delta API for efficiency
+1. **Bandwidth Control**: Limit upload/download speed
+2. **File Exclusions**: Ignore patterns (.gitignore style)
+3. **System Tray**: Minimize to tray with status icon
+4. **Notifications**: Desktop notifications for sync events
+5. **Multi-account**: Support multiple OneDrive accounts
+6. **Sharing**: Manage OneDrive sharing from GUI
+7. **Offline Mode**: Queue operations when offline
+8. **Delta Sync**: Use OneDrive delta API for efficiency
+9. **Folder Support**: "Keep Local Copy" for entire folders
+10. **Progress Bars**: Real-time upload/download progress in GUI
 
 ## Known Limitations
 
-1. **Upload-only**: No automatic downloads
-2. **No Conflict Detection**: Last write wins
-3. **Single Directory**: One sync folder per config
-4. **No Encryption**: Files not encrypted at rest locally
-5. **Linux Only**: Designed for Ubuntu/GNOME
-6. **No Versioning UI**: Can't access OneDrive file versions
+1. **Selective Sync**: New remote files require manual download ("Keep Local Copy")
+2. **Single Directory**: One sync folder per config
+3. **No Local Encryption**: Files not encrypted at rest locally (relies on OneDrive encryption)
+4. **Linux Only**: Designed for Ubuntu/GNOME (requires GTK 3.0)
+5. **No Versioning UI**: Can't access OneDrive file version history from GUI
+6. **No Folder Operations**: "Keep Local Copy" works per-file, not for entire folders
+7. **No Bandwidth Throttling**: Uploads/downloads use full available bandwidth
 
 ## Troubleshooting
 

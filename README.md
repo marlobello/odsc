@@ -87,7 +87,8 @@ Or install as a systemd service:
 
 ```bash
 # Copy service file
-sudo cp systemd/odsc.service /etc/systemd/user/
+mkdir -p ~/.config/systemd/user/
+cp systemd/odsc.service ~/.config/systemd/user/
 
 # Enable and start service
 systemctl --user enable odsc
@@ -105,16 +106,24 @@ The GUI provides the following features:
   - File name
   - Size
   - Last modified date
-  - Local availability status (checkbox)
+  - Local availability status (checkbox indicates if file has local copy)
 
-- **Download Files**: 
-  1. Select one or more files that aren't local
-  2. Click "Download Selected"
+- **Keep Local Copy**: 
+  1. Select one or more files that don't have local copies
+  2. Click "Keep Local Copy"
   3. Files will be downloaded to your sync directory
+  4. Files will now be automatically kept in sync
+
+- **Remove Local Copy**:
+  1. Select one or more files that have local copies
+  2. Click "Remove Local Copy"
+  3. Local files deleted, but remain on OneDrive
+  4. Files stop being automatically synced
+  5. Can be re-downloaded anytime
 
 - **Refresh**: Click "Refresh" to update the file list from OneDrive
 
-- **Automatic Upload**: Any files you add to the sync directory will be automatically uploaded to OneDrive
+- **Automatic Upload**: Any new or modified files in your sync directory are automatically uploaded to OneDrive
 
 ## Configuration
 
@@ -142,7 +151,13 @@ Configuration is stored in `~/.config/odsc/config.json`:
 
 ODSC includes comprehensive logging for debugging. Logs are written to:
 - **Console**: When running GUI or daemon
-- **File**: `~/.config/odsc/odsc.log`
+- **File**: `~/.config/odsc/odsc.log` (with automatic rotation)
+
+**Log Rotation:**
+- Maximum log file size: 10 MB
+- Backup files kept: 5 (odsc.log.1, odsc.log.2, etc.)
+- Total maximum log storage: ~50 MB
+- Old logs automatically deleted when limit reached
 
 **Log Levels:**
 - `DEBUG`: Detailed diagnostic information (API calls, tokens, responses)
@@ -171,33 +186,90 @@ grep ERROR ~/.config/odsc/odsc.log
 
 ## File Sync Behavior
 
+ODSC is designed with a **safety-first** approach to prevent accidental data loss. Understanding how sync works in different scenarios is important for proper use.
+
 ### Upload (Automatic)
-- Files created or modified in the sync directory are automatically uploaded to OneDrive
-- Changes are detected in real-time via file system monitoring
-- Periodic full scans ensure no changes are missed
+- **New local files**: Automatically uploaded to OneDrive
+- **Modified local files**: Changes detected in real-time and uploaded
+- **Detection methods**: 
+  - Real-time file system monitoring (Watchdog)
+  - Periodic full scans (every 5 minutes by default)
 
-### Download (Manual, Then Synced)
-- **New files on OneDrive are NOT automatically downloaded**
-- Use the GUI to selectively download files you want locally
-- Once downloaded, those files are automatically kept in sync
-- Remote updates to downloaded files are automatically synced
+### Download (Selective, Then Synced)
+- **New OneDrive files**: NOT automatically downloaded
+  - Appear in GUI file list but remain cloud-only
+  - Use "Keep Local Copy" button to download specific files
+  - This prevents unwanted downloads and saves local storage
+- **Downloaded files**: Automatically kept in sync
+  - Marked as `downloaded` in sync state
+  - Remote updates are automatically downloaded
+  - Local changes are automatically uploaded
 
-### Remote Deletions
-- When a file is deleted on OneDrive that exists locally:
-  - Local copy is moved to `~/OneDrive/.local_recycle_bin/`
-  - Organized by timestamp folder
-  - Automatically deleted after 90 days
-  - Prevents accidental data loss
+### "Keep Local Copy" Button
+- Downloads file from OneDrive to your sync directory
+- Marks file as actively synced
+- File will now receive automatic updates from OneDrive
+- Local changes will be automatically uploaded
 
-### Local Deletions
-- Local deletions do NOT delete files from OneDrive (safety feature)
-- Deleted files remain on OneDrive
+### "Remove Local Copy" Button
+- **Deletes file from local storage only**
+- **File remains on OneDrive** (safety feature)
+- Marks file as not downloaded in sync state
+- File stops being automatically synced
+- Can be re-downloaded anytime using "Keep Local Copy"
+
+### Remote Deletions (File Deleted in OneDrive)
+When a file you've downloaded is deleted from OneDrive:
+- **Local copy moved to system recycle bin/trash**
+  - Uses OS trash system (recoverable via system trash folder)
+  - Does NOT permanently delete
+  - Prevents accidental data loss from remote deletions
+- **Removed from sync state**
+- If trash fails, falls back to permanent deletion with warning logged
+
+### Local Deletions (File Deleted Locally)
+When you delete a file from your local sync directory:
+- **File remains on OneDrive** (safety feature)
+- File is NOT deleted from cloud storage
+- If file was being synced:
+  - Marked as locally deleted in sync state
+  - Will not be re-downloaded automatically
+  - Must use "Keep Local Copy" to download again
+- **Rationale**: Protects against accidental local deletions
 
 ### Conflict Resolution
-- If both local and remote versions change, both are kept:
-  - Local version remains as-is
-  - Remote version is saved as `filename.conflict`
-  - User can manually resolve the conflict
+When both local and remote versions of a file are modified:
+- **Both versions are preserved**:
+  - Local version remains unchanged at original path
+  - Remote version downloaded as `filename.conflict`
+- **User must manually resolve**:
+  - Review both versions
+  - Keep the desired version
+  - Delete or rename the other
+  - System makes no assumptions about which version is "correct"
+
+### Edge Cases
+
+#### New File Already Exists Remotely
+If you add a file locally that already exists on OneDrive (same name/path):
+- If sizes match: Assumed to be same file, synced normally
+- If sizes differ: Treated as conflict, creates `.conflict` file
+
+#### Remote File Modified After "Remove Local Copy"
+If you removed local copy of a file, then it's updated on OneDrive:
+- File remains cloud-only (NOT automatically re-downloaded)
+- Must manually "Keep Local Copy" to get updated version
+- Prevents unwanted downloads of files you've chosen not to sync
+
+#### File Deleted Both Locally and Remotely
+- Both deletions honored (file gone from both places)
+- No conflict or recovery needed
+- Sync state cleaned up automatically
+
+#### Multiple Rapid Changes
+- Local changes are batched and debounced before upload
+- Reduces API calls and handles save-spam from applications
+- Final state is always synced correctly
 
 ## Troubleshooting
 
