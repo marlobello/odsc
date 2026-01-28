@@ -1,12 +1,26 @@
+# MANIFEST.in - Defines which files to include in source distributions
+#
+# NOTE: This is only used when building packages for distribution (e.g., PyPI).
+# The install.sh script does not use this file.
+#
+# Used by: python setup.py sdist, twine upload, etc.
+
+# Documentation
 include README.md
 include LICENSE
-include CONTRIBUTING.md
 include QUICKSTART.md
 include ARCHITECTURE.md
+
+# Configuration and installation
 include requirements.txt
-include config.example.json
 include install.sh
-recursive-include systemd *.service
+
+# Desktop integration files
 recursive-include desktop *.desktop
-recursive-include src *.py
+recursive-include desktop *.svg
+
+# Systemd service files
+recursive-include systemd *.service
+
+# Tests
 recursive-include tests *.py
