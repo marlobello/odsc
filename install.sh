@@ -66,6 +66,14 @@ echo "Creating default sync directory..."
 mkdir -p "$HOME/OneDrive"
 echo "✓ Sync directory created at $HOME/OneDrive"
 
+# Install icon
+echo ""
+echo "Installing application icon..."
+mkdir -p "$HOME/.local/share/icons/hicolor/scalable/apps"
+cp desktop/odsc.svg "$HOME/.local/share/icons/hicolor/scalable/apps/"
+gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+echo "✓ Application icon installed"
+
 # Install systemd service (optional)
 echo ""
 read -p "Do you want to install the systemd service? (y/n) " -n 1 -r
@@ -89,6 +97,7 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     mkdir -p "$HOME/.local/share/applications"
     cp desktop/odsc.desktop "$HOME/.local/share/applications/"
+    update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
     echo "✓ Desktop entry installed"
 fi
 
@@ -98,9 +107,8 @@ echo "Installation completed successfully!"
 echo "==================================="
 echo ""
 echo "Next steps:"
-echo "1. Register an application at https://portal.azure.com"
-echo "2. Run 'odsc-gui' to start the graphical interface"
-echo "3. Click 'Authenticate' and enter your Azure Client ID"
-echo "4. Start syncing!"
+echo "1. Launch ODSC GUI from your applications menu or run: odsc-gui"
+echo "2. Click 'Authenticate' to log in with your Microsoft account"
+echo "3. Start syncing!"
 echo ""
 echo "For more information, see README.md"
