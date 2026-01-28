@@ -54,7 +54,10 @@ class OneDriveClient:
             'response_type': 'code',
             'redirect_uri': self.REDIRECT_URI,
         }
-        return f"{self.AUTH_URL}?{urlencode(params)}"
+        auth_url = f"{self.AUTH_URL}?{urlencode(params)}"
+        logger.debug(f"Generated auth URL with client_id={self.client_id}")
+        logger.debug(f"Auth URL: {auth_url}")
+        return auth_url
     
     def exchange_code(self, code: str) -> Dict[str, Any]:
         """Exchange authorization code for access token.
@@ -72,12 +75,33 @@ class OneDriveClient:
             'grant_type': 'authorization_code',
         }
         
-        response = requests.post(self.TOKEN_URL, data=data)
-        response.raise_for_status()
+        logger.info(f"Exchanging authorization code for access token")
+        logger.debug(f"Token exchange URL: {self.TOKEN_URL}")
+        logger.debug(f"Token exchange data: client_id={self.client_id}, redirect_uri={self.REDIRECT_URI}, grant_type=authorization_code")
+        logger.debug(f"Authorization code (first 10 chars): {code[:10]}...")
         
-        self.token_data = response.json()
-        self.token_data['expires_at'] = time.time() + self.token_data.get('expires_in', 3600)
-        return self.token_data
+        try:
+            response = requests.post(self.TOKEN_URL, data=data)
+            logger.debug(f"Token exchange response status: {response.status_code}")
+            logger.debug(f"Token exchange response headers: {dict(response.headers)}")
+            
+            if response.status_code != 200:
+                logger.error(f"Token exchange failed with status {response.status_code}")
+                logger.error(f"Response body: {response.text}")
+            
+            response.raise_for_status()
+            
+            self.token_data = response.json()
+            logger.debug(f"Token data keys: {list(self.token_data.keys())}")
+            self.token_data['expires_at'] = time.time() + self.token_data.get('expires_in', 3600)
+            logger.info("Successfully obtained access token")
+            return self.token_data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Token exchange request failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Error response body: {e.response.text}")
+            raise
     
     def refresh_token(self) -> Dict[str, Any]:
         """Refresh access token using refresh token.
@@ -86,7 +110,10 @@ class OneDriveClient:
             New token data
         """
         if 'refresh_token' not in self.token_data:
+            logger.error("No refresh token available")
             raise ValueError("No refresh token available")
+        
+        logger.info("Refreshing access token")
         
         data = {
             'client_id': self.client_id,
@@ -94,12 +121,28 @@ class OneDriveClient:
             'grant_type': 'refresh_token',
         }
         
-        response = requests.post(self.TOKEN_URL, data=data)
-        response.raise_for_status()
+        logger.debug(f"Refresh token request to {self.TOKEN_URL}")
         
-        self.token_data = response.json()
-        self.token_data['expires_at'] = time.time() + self.token_data.get('expires_in', 3600)
-        return self.token_data
+        try:
+            response = requests.post(self.TOKEN_URL, data=data)
+            logger.debug(f"Refresh token response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                logger.error(f"Token refresh failed with status {response.status_code}")
+                logger.error(f"Response body: {response.text}")
+            
+            response.raise_for_status()
+            
+            self.token_data = response.json()
+            self.token_data['expires_at'] = time.time() + self.token_data.get('expires_in', 3600)
+            logger.info("Successfully refreshed access token")
+            return self.token_data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Token refresh failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Error response body: {e.response.text}")
+            raise
     
     def _ensure_token(self) -> None:
         """Ensure we have a valid access token."""

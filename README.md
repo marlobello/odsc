@@ -124,9 +124,49 @@ Configuration is stored in `~/.config/odsc/config.json`:
 {
   "sync_directory": "/home/user/OneDrive",
   "sync_interval": 300,
-  "client_id": "your-azure-client-id",
-  "auto_start": false
+  "client_id": "",
+  "auto_start": false,
+  "log_level": "INFO"
 }
+```
+
+### Configuration Options
+
+- **sync_directory**: Local directory for OneDrive files
+- **sync_interval**: Seconds between sync checks (default: 300)
+- **client_id**: Custom Azure client ID (optional, uses default if empty)
+- **auto_start**: Auto-start with systemd (default: false)
+- **log_level**: Logging verbosity - DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
+
+### Logging
+
+ODSC includes comprehensive logging for debugging. Logs are written to:
+- **Console**: When running GUI or daemon
+- **File**: `~/.config/odsc/odsc.log`
+
+**Log Levels:**
+- `DEBUG`: Detailed diagnostic information (API calls, tokens, responses)
+- `INFO`: General informational messages (default)
+- `WARNING`: Warning messages for potential issues
+- `ERROR`: Error messages for failures
+- `CRITICAL`: Critical failures
+
+**To enable debug logging:**
+
+1. Edit `~/.config/odsc/config.json` and set `"log_level": "DEBUG"`
+2. Or set environment variable: `export ODSC_LOG_LEVEL=DEBUG`
+3. Restart the GUI or daemon
+
+**View logs:**
+```bash
+# Real-time log viewing
+tail -f ~/.config/odsc/odsc.log
+
+# View last 50 lines
+tail -n 50 ~/.config/odsc/odsc.log
+
+# Search for errors
+grep ERROR ~/.config/odsc/odsc.log
 ```
 
 ## File Sync Behavior

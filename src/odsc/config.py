@@ -3,8 +3,11 @@
 
 import json
 import os
+import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 class Config:
@@ -15,6 +18,7 @@ class Config:
     CONFIG_FILE = "config.json"
     TOKEN_FILE = ".onedrive_token"
     STATE_FILE = "sync_state.json"
+    LOG_FILE = "odsc.log"
     
     def __init__(self, config_dir: Optional[Path] = None):
         """Initialize configuration manager.
@@ -28,6 +32,7 @@ class Config:
         self.config_path = self.config_dir / self.CONFIG_FILE
         self.token_path = self.config_dir / self.TOKEN_FILE
         self.state_path = self.config_dir / self.STATE_FILE
+        self.log_path = self.config_dir / self.LOG_FILE
         
         self._config: Dict[str, Any] = {}
         self.load()
@@ -37,14 +42,17 @@ class Config:
         if self.config_path.exists():
             with open(self.config_path, 'r') as f:
                 self._config = json.load(f)
+            logger.debug(f"Loaded config from {self.config_path}")
         else:
             # Initialize with defaults
             self._config = {
                 'sync_directory': str(self.DEFAULT_SYNC_DIR),
                 'sync_interval': 300,  # 5 minutes
                 'auto_start': False,
+                'log_level': 'INFO',
             }
             self.save()
+            logger.debug(f"Created default config at {self.config_path}")
     
     def save(self) -> None:
         """Save configuration to file."""
@@ -93,6 +101,11 @@ class Config:
     def client_id(self) -> str:
         """Get OneDrive client ID."""
         return self._config.get('client_id', '')
+    
+    @property
+    def log_level(self) -> str:
+        """Get log level."""
+        return self._config.get('log_level', 'INFO').upper()
     
     def save_token(self, token_data: Dict[str, Any]) -> None:
         """Save OneDrive authentication token.

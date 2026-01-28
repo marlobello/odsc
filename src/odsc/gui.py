@@ -16,9 +16,8 @@ from gi.repository import Gtk, GLib, Gdk
 
 from .config import Config
 from .onedrive_client import OneDriveClient
+from .logging_config import setup_logging
 
-
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -60,12 +59,22 @@ class OneDriveGUI(Gtk.Window):
         self.set_border_width(10)
         
         self.config = Config()
+        
+        # Setup logging
+        setup_logging(level=self.config.log_level, log_file=self.config.log_path)
+        logger.info("=== ODSC GUI Starting ===")
+        logger.info(f"Config directory: {self.config.config_dir}")
+        logger.info(f"Log level: {self.config.log_level}")
+        
         self.client: Optional[OneDriveClient] = None
         self.remote_files: List[Dict[str, Any]] = []
         
         # Initialize client if authenticated
         if self.config.load_token():
+            logger.info("Found existing token, initializing client")
             self._init_client()
+        else:
+            logger.info("No existing token found")
         
         self._build_ui()
         self.connect("destroy", Gtk.main_quit)
@@ -194,30 +203,41 @@ class OneDriveGUI(Gtk.Window):
         # Use configured client_id or None to use default
         client_id = self.config.client_id or None
         
+        logger.info("=== Starting Authentication Flow ===")
+        logger.info(f"Using client_id: {client_id if client_id else 'DEFAULT'}")
+        
         # Create temporary client for auth
         temp_client = OneDriveClient(client_id)
         auth_url = temp_client.get_auth_url()
         
+        logger.info(f"Opening browser for authentication")
         # Open browser for auth
         webbrowser.open(auth_url)
         
         # Start local server to receive callback
         def wait_for_callback():
             try:
+                logger.info("Starting local callback server on port 8080")
                 with socketserver.TCPServer(("", 8080), AuthCallbackHandler) as httpd:
+                    logger.debug("Waiting for OAuth callback...")
                     httpd.handle_request()
                     
                     if AuthCallbackHandler.auth_code:
+                        logger.info("Received authorization code from callback")
                         try:
                             token_data = temp_client.exchange_code(AuthCallbackHandler.auth_code)
                             self.config.save_token(token_data)
                             self.client = temp_client
+                            logger.info("Authentication successful!")
                             
                             GLib.idle_add(self._on_auth_success)
                         except Exception as e:
-                            logger.error(f"Auth failed: {e}")
+                            logger.error(f"Auth failed: {e}", exc_info=True)
                             GLib.idle_add(self._show_error, f"Authentication failed: {e}")
+                    else:
+                        logger.warning("No authorization code received in callback")
             except OSError as e:
+                logger.error(f"Socket error: {e}", exc_info=True)
                 if e.errno == 98:  # Address already in use
                     GLib.idle_add(self._show_error, "Port 8080 is already in use. Please close other applications using this port.")
                 else:
@@ -227,6 +247,7 @@ class OneDriveGUI(Gtk.Window):
         thread.start()
         
         self._update_status("Waiting for authentication...")
+        logger.info("Authentication flow initiated, waiting for user...")
     
     def _on_auth_success(self) -> None:
         """Handle successful authentication."""
