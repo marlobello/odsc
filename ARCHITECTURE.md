@@ -110,9 +110,10 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 **UI Components**:
 - Main window with toolbar
 - File list (TreeView)
-- Authentication dialog
 - Settings dialog
 - Status bar
+
+**Note**: Authentication dialog removed - authentication is now direct (one-click)
 
 **Threading Model**:
 - UI runs on main thread
@@ -160,9 +161,7 @@ Refresh File List
 ```
 User Clicks "Authenticate"
     ↓
-Enter Client ID
-    ↓
-Open Browser to Microsoft
+Open Browser to Microsoft (with default client ID)
     ↓
 User Logs In
     ↓
@@ -174,6 +173,8 @@ Exchange for Access Token
     ↓
 Store Token + Refresh Token
 ```
+
+**Note**: No Azure app registration required. ODSC uses a built-in public client ID.
 
 ## File Sync Strategy
 
@@ -211,9 +212,15 @@ Currently **not implemented**. Plans for future:
 - Scopes limited to Files.ReadWrite
 - No server-side storage of credentials
 
+### Default Client ID
+- Uses Microsoft's legacy OneDrive public client ID
+- No Azure app registration required for end users
+- Safe to include in source code (public client identifier)
+- Widely used by OneDrive sync implementations
+
 ### Recommendations
-- Register app in personal Azure tenant
-- Don't share Client ID publicly for production use
+- Default client ID works for most users (OneDrive Consumer)
+- Custom client IDs can be used for advanced scenarios
 - Regularly review app permissions in Microsoft account
 
 ## Performance Considerations
