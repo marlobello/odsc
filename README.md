@@ -8,7 +8,7 @@ A Ubuntu/GNOME-based sync client for Microsoft OneDrive (personal) that runs as 
 - **Event-Driven & Periodic Sync**: Monitors file changes in real-time and performs periodic full syncs
 - **GNOME GTK Interface**: Native GUI showing OneDrive files with sync status
 - **Selective Download**: View all OneDrive files without downloading them; download only when needed
-- **OAuth2 Authentication**: Secure authentication with Microsoft OneDrive (no app registration required!)
+- **OAuth2 Authentication**: Secure authentication with Microsoft OneDrive
 - **Systemd Integration**: Run as a system service with auto-start capability
 
 ## Prerequisites
@@ -17,6 +17,7 @@ A Ubuntu/GNOME-based sync client for Microsoft OneDrive (personal) that runs as 
 - Python 3.8 or higher
 - GTK 3.0 development libraries
 - Microsoft account with OneDrive (personal or Microsoft 365 Family subscription)
+- **Azure App Registration** (free, required for OneDrive API access)
 
 ## Installation
 
@@ -52,6 +53,20 @@ pip3 install --user --break-system-packages -e . --no-deps
 
 The `--no-deps` flag ensures only ODSC is installed via pip, using system packages for dependencies.
 
+### 4. Register Azure Application
+
+Before you can authenticate, you need to create a free Azure app registration:
+
+1. Go to [Azure Portal App Registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
+2. Click "New registration"
+3. Enter a name (e.g., "ODSC - OneDrive Sync Client")
+4. Under "Supported account types", select **"Personal Microsoft accounts only"**
+5. Under "Redirect URI", select "Web" and enter: `http://localhost:8080`
+6. Click "Register"
+7. Copy the **Application (client) ID** - you'll need this for authentication
+
+**Important**: Make sure you select "Personal Microsoft accounts only" - this allows the app to work with consumer OneDrive accounts.
+
 ## Usage
 
 ### First-Time Setup
@@ -63,6 +78,7 @@ The `--no-deps` flag ensures only ODSC is installed via pip, using system packag
 
 2. **Authenticate**:
    - Click "Authenticate" in the toolbar
+   - Enter your **Azure Application (client) ID** from step 4 of installation
    - A browser window will open for Microsoft authentication
    - Log in with your Microsoft account
    - Authorize the application
