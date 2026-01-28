@@ -19,8 +19,9 @@ class OneDriveClient:
     """Client for interacting with Microsoft OneDrive API."""
     
     # Microsoft Graph API endpoints
-    AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
-    TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    # Using /consumers/ endpoint for personal Microsoft accounts (OneDrive Consumer)
+    AUTH_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize"
+    TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
     API_BASE = "https://graph.microsoft.com/v1.0"
     REDIRECT_URI = "http://localhost:8080"
     SCOPES = "files.readwrite offline_access"
