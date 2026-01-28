@@ -360,7 +360,7 @@ class OneDriveGUI(Gtk.Window):
         """Update file list view with folder hierarchy.
         
         Args:
-            files: List of file metadata
+            files: List of file metadata from OneDrive
         """
         self.remote_files = files
         self.file_store.clear()
@@ -372,6 +372,9 @@ class OneDriveGUI(Gtk.Window):
         # Build folder hierarchy
         # Key: folder path, Value: TreeIter
         folder_iters = {}
+        
+        # Track which files exist on OneDrive
+        remote_files_set = set()
         
         # Sort: folders first, then by path
         sorted_items = sorted(files, key=lambda x: (
@@ -396,6 +399,8 @@ class OneDriveGUI(Gtk.Window):
                 full_path = parent_path.lstrip('/') + '/' + name
             else:
                 full_path = name
+            
+            remote_files_set.add(full_path)
             
             # Determine parent iter
             parent_iter = None
@@ -430,10 +435,66 @@ class OneDriveGUI(Gtk.Window):
                 ])
                 logger.debug(f"Added file: {full_path}")
         
+        # Add local files that aren't on OneDrive yet (pending upload)
+        logger.debug("Scanning for local files pending upload...")
+        self._add_pending_uploads(sync_dir, remote_files_set, folder_iters)
+        
         # Expand root level folders
         self.file_tree.expand_row(Gtk.TreePath.new_first(), False)
         
         self._update_status(f"Loaded {len(files)} items")
+    
+    def _add_pending_uploads(self, sync_dir: Path, remote_files_set: set, folder_iters: Dict) -> None:
+        """Add local files that haven't been uploaded to OneDrive yet.
+        
+        Args:
+            sync_dir: Local sync directory
+            remote_files_set: Set of paths that exist on OneDrive
+            folder_iters: Dictionary of folder path to TreeIter
+        """
+        pending_count = 0
+        
+        for path in sync_dir.rglob('*'):
+            # Skip hidden files and OneDrive config
+            if any(part.startswith('.') for part in path.parts):
+                continue
+            
+            if path.is_file():
+                try:
+                    rel_path = str(path.relative_to(sync_dir))
+                    
+                    # Check if this file is on OneDrive
+                    if rel_path not in remote_files_set:
+                        # This is a local file pending upload
+                        name = path.name
+                        parent_path = str(path.parent.relative_to(sync_dir)) if path.parent != sync_dir else ""
+                        
+                        # Get parent iter
+                        parent_iter = None
+                        if parent_path and parent_path != '.':
+                            parent_iter = folder_iters.get(parent_path)
+                            
+                            # If parent folder doesn't exist in tree, skip for now
+                            if parent_iter is None and parent_path:
+                                logger.debug(f"Parent folder not in tree, skipping: {rel_path}")
+                                continue
+                        
+                        # Add file with upload icon
+                        icon = "emblem-synchronizing"  # Upload pending icon
+                        size = self._format_size(path.stat().st_size)
+                        modified = ""
+                        
+                        self.file_store.append(parent_iter, [
+                            icon, f"{name} (pending upload)", size, modified, True, "", False, rel_path
+                        ])
+                        pending_count += 1
+                        logger.debug(f"Added pending upload: {rel_path}")
+                        
+                except (OSError, ValueError) as e:
+                    logger.warning(f"Cannot process {path}: {e}")
+        
+        if pending_count > 0:
+            logger.info(f"Found {pending_count} files pending upload")
     
     def _get_file_icon(self, filename: str) -> str:
         """Get icon name for file type.

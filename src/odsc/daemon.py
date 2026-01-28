@@ -14,12 +14,8 @@ from watchdog.events import FileSystemEventHandler, FileSystemEvent
 
 from .config import Config
 from .onedrive_client import OneDriveClient
+from .logging_config import setup_logging
 
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 
@@ -98,6 +94,10 @@ class SyncDaemon:
         Returns:
             True if initialization successful
         """
+        # Setup logging
+        setup_logging(level=self.config.log_level, log_file=self.config.log_path)
+        logger.info("=== ODSC Daemon Starting ===")
+        
         # client_id is optional - will use default if not configured
         client_id = self.config.client_id or None
         
@@ -108,6 +108,7 @@ class SyncDaemon:
             return False
         
         self.client = OneDriveClient(client_id, token_data)
+        logger.info("OneDrive client initialized")
         return True
     
     def start(self) -> None:
@@ -225,13 +226,15 @@ class SyncDaemon:
             # Check if file is new or modified
             if not state_entry or state_entry['mtime'] < info['mtime']:
                 try:
+                    logger.info(f"Uploading new/modified file: {rel_path}")
                     self.client.upload_file(info['path'], rel_path)
                     self.state['files'][rel_path] = {
                         'mtime': info['mtime'],
                         'synced': True,
                     }
+                    logger.info(f"Successfully uploaded: {rel_path}")
                 except Exception as e:
-                    logger.error(f"Failed to upload {rel_path}: {e}")
+                    logger.error(f"Failed to upload {rel_path}: {e}", exc_info=True)
         
         # Update sync time
         self.state['last_sync'] = datetime.now().isoformat()
