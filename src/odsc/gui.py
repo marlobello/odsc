@@ -309,7 +309,8 @@ class OneDriveGUI(Gtk.Window):
         self.file_store.clear()
         
         # Update UI
-        self.download_button.set_sensitive(False)
+        self.keep_local_button.set_sensitive(False)
+        self.remove_local_button.set_sensitive(False)
         self._update_status("Logged out successfully")
         
         # Show info dialog
@@ -337,36 +338,58 @@ class OneDriveGUI(Gtk.Window):
             True if event handled
         """
         if event.type == Gdk.EventType.BUTTON_PRESS:
-            selection = self.file_tree.get_selection()
-            model, paths = selection.get_selected_rows()
-            
-            if paths:
-                # Check what's selected to enable appropriate buttons
-                has_remote_only = False
-                has_local_copy = False
-                
-                for path in paths:
-                    iter = model.get_iter(path)
-                    is_local = model.get_value(iter, 4)
-                    is_folder = model.get_value(iter, 6)
-                    file_id = model.get_value(iter, 5)
-                    
-                    # Skip folders
-                    if is_folder:
-                        continue
-                    
-                    if is_local:
-                        has_local_copy = True
-                    elif file_id:  # Has file_id means it's on OneDrive
-                        has_remote_only = True
-                
-                self.keep_local_button.set_sensitive(has_remote_only)
-                self.remove_local_button.set_sensitive(has_local_copy)
-            else:
-                self.keep_local_button.set_sensitive(False)
-                self.remove_local_button.set_sensitive(False)
-        
+            self._update_button_states()
         return False
+    
+    def _update_button_states(self) -> None:
+        """Update button enabled/disabled states based on selection."""
+        selection = self.file_tree.get_selection()
+        model, paths = selection.get_selected_rows()
+        
+        if not paths:
+            self.keep_local_button.set_sensitive(False)
+            self.remove_local_button.set_sensitive(False)
+            return
+        
+        # Count files by type (ignore folders)
+        has_remote_only = 0  # Files on OneDrive but not local
+        has_local_copy = 0   # Files that exist locally
+        
+        for path in paths:
+            iter = model.get_iter(path)
+            is_local = model.get_value(iter, 4)
+            is_folder = model.get_value(iter, 6)
+            file_id = model.get_value(iter, 5)
+            
+            # Skip folders
+            if is_folder:
+                continue
+            
+            # Categorize file
+            if is_local:
+                # Has local copy (synced)
+                has_local_copy += 1
+            elif file_id:
+                # Has file_id and not local means it's remote-only
+                has_remote_only += 1
+        
+        # Logic:
+        # - All selected files are remote-only → Enable "Keep Local Copy"
+        # - All selected files have local copies → Enable "Remove Local Copy"
+        # - Mixed selection → Disable both buttons
+        
+        if has_remote_only > 0 and has_local_copy == 0:
+            # Only remote-only files selected
+            self.keep_local_button.set_sensitive(True)
+            self.remove_local_button.set_sensitive(False)
+        elif has_local_copy > 0 and has_remote_only == 0:
+            # Only synced files selected
+            self.keep_local_button.set_sensitive(False)
+            self.remove_local_button.set_sensitive(True)
+        else:
+            # Mixed or no valid files selected
+            self.keep_local_button.set_sensitive(False)
+            self.remove_local_button.set_sensitive(False)
     
     def _on_keep_local_clicked(self, widget) -> None:
         """Handle keep local copy button click."""
@@ -389,6 +412,9 @@ class OneDriveGUI(Gtk.Window):
             
             if file_id:
                 self._download_file(file_id, file_name)
+        
+        # Update button states after action
+        GLib.timeout_add(500, self._update_button_states)
     
     def _on_remove_local_clicked(self, widget) -> None:
         """Handle remove local copy button click."""
@@ -428,6 +454,9 @@ class OneDriveGUI(Gtk.Window):
                 continue
             
             self._remove_local_file(file_path_str, file_name)
+        
+        # Update button states after action
+        GLib.timeout_add(500, self._update_button_states)
     
     def _remove_local_file(self, rel_path: str, file_name: str) -> None:
         """Remove local copy of a file.
