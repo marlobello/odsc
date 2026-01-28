@@ -153,8 +153,9 @@ class OneDriveGUI(Gtk.Window):
         
         scrolled.add(self.file_tree)
         
-        # Context menu for downloading
-        self.file_tree.connect("button-press-event", self._on_tree_button_press)
+        # Connect to selection changed signal for button states
+        selection = self.file_tree.get_selection()
+        selection.connect("changed", self._on_selection_changed)
         
         # Bottom button bar
         button_box = Gtk.Box(spacing=6)
@@ -331,14 +332,21 @@ class OneDriveGUI(Gtk.Window):
         dialog.run()
         dialog.destroy()
     
+    def _on_selection_changed(self, selection) -> None:
+        """Handle selection changed event.
+        
+        Args:
+            selection: TreeSelection object
+        """
+        self._update_button_states()
+    
     def _on_tree_button_press(self, widget, event) -> bool:
         """Handle tree view button press.
         
         Returns:
             True if event handled
         """
-        if event.type == Gdk.EventType.BUTTON_PRESS:
-            self._update_button_states()
+        # Selection changed signal will handle button states
         return False
     
     def _update_button_states(self) -> None:
