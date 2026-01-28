@@ -25,10 +25,10 @@ class OneDriveClient:
     REDIRECT_URI = "http://localhost:8080"
     SCOPES = "files.readwrite offline_access"
     
-    # Default public client ID for OneDrive Consumer
-    # This is Microsoft's legacy OneDrive application ID that works with personal accounts
-    # It's a well-known public client that doesn't require app registration
-    DEFAULT_CLIENT_ID = "0000000040126752"
+    # Default public client ID for ODSC
+    # Registered Azure application for OneDrive Consumer (personal accounts)
+    # Users can override this by providing their own client ID if needed
+    DEFAULT_CLIENT_ID = "df3a0308-c302-4962-b115-08bd59526bc5"
     
     def __init__(self, client_id: Optional[str] = None, token_data: Optional[Dict[str, Any]] = None):
         """Initialize OneDrive client.

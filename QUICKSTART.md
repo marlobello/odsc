@@ -13,31 +13,18 @@ cd odsc
 
 ## First Use
 
-### Register Azure Application (One-Time Setup)
-
-Before using ODSC, create a free Azure app registration:
-
-1. Go to [Azure Portal App Registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
-2. Click "New registration"
-3. Name: "ODSC - OneDrive Sync Client" 
-4. Select: **"Personal Microsoft accounts only"**
-5. Redirect URI: Web → `http://localhost:8080`
-6. Click "Register"
-7. Copy the **Application (client) ID**
-
-### Authenticate
-
 ```bash
 # Start the GUI
 odsc-gui
 ```
 
 1. Click **Authenticate** button
-2. Enter your **Application (client) ID** from Azure
-3. Browser will open for Microsoft login
-4. Log in with your Microsoft account
-5. Authorize the application
-6. Return to the GUI - authentication completes automatically
+2. Browser will open for Microsoft login
+3. Log in with your Microsoft account
+4. Authorize the application
+5. Return to the GUI - authentication completes automatically
+
+**Note**: ODSC uses a built-in Azure app registration. No manual setup required!
 
 ## Configure Sync
 
