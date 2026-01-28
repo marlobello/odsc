@@ -209,6 +209,13 @@ class SyncDaemon:
         # Remove known OneDrive prefixes
         path = raw_path.replace('/drive/root:', '').replace('/drive/root', '')
         
+        # Strip leading/trailing slashes to make it a relative path
+        path = path.strip('/').strip('\\')
+        
+        # If empty after stripping, return empty
+        if not path:
+            return ''
+        
         # Use pathlib to properly handle path components
         parts = Path(path).parts
         
@@ -216,10 +223,12 @@ class SyncDaemon:
         safe_parts = []
         for part in parts:
             # Block path traversal and special names
+            # Note: '/' shouldn't appear here anymore due to strip above,
+            # but keep it for safety
             if part in ('..', '.', '/', '\\', ''):
                 logger.warning(f"Blocked dangerous path component: {part}")
                 continue
-            # Block absolute paths
+            # Block absolute paths (shouldn't happen after strip, but double-check)
             if part.startswith('/') or part.startswith('\\'):
                 logger.warning(f"Blocked absolute path component: {part}")
                 continue
