@@ -1,0 +1,14 @@
+# OneDrive API (using Microsoft Graph directly)
+requests>=2.31.0
+
+# File system monitoring
+watchdog>=3.0.0
+
+# GNOME/GTK GUI
+PyGObject>=3.42.0
+
+# D-Bus for inter-process communication
+dbus-python>=1.3.2
+
+# Configuration and utilities
+python-dateutil>=2.8.2
