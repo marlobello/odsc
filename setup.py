@@ -38,6 +38,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
+            "odsc=odsc.cli:main",
             "odsc-daemon=odsc.daemon:main",
             "odsc-gui=odsc.gui:main",
         ],

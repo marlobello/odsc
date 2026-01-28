@@ -1,0 +1,12 @@
+include README.md
+include LICENSE
+include CONTRIBUTING.md
+include QUICKSTART.md
+include ARCHITECTURE.md
+include requirements.txt
+include config.example.json
+include install.sh
+recursive-include systemd *.service
+recursive-include desktop *.desktop
+recursive-include src *.py
+recursive-include tests *.py
