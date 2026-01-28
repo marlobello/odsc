@@ -2,10 +2,13 @@
 """Configuration management for ODSC."""
 
 import json
-import os
 import logging
+import base64
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+from cryptography.fernet import Fernet, InvalidToken
+import keyring
 
 logger = logging.getLogger(__name__)
 
@@ -108,26 +111,50 @@ class Config:
         return self._config.get('log_level', 'INFO').upper()
     
     def save_token(self, token_data: Dict[str, Any]) -> None:
-        """Save OneDrive authentication token.
+        """Save encrypted OneDrive authentication token.
         
         Args:
             token_data: Token data dictionary
         """
-        with open(self.token_path, 'w') as f:
-            json.dump(token_data, f)
-        # Restrict permissions to owner only for security
+        # Encrypt token data
+        encrypted = self._encrypt_token(token_data)
+        
+        # Write encrypted data
+        self.token_path.write_bytes(encrypted)
+        
+        # Secure file permissions (owner read/write only)
         self.token_path.chmod(0o600)
+        
+        logger.info("Token saved with encryption")
     
     def load_token(self) -> Optional[Dict[str, Any]]:
-        """Load OneDrive authentication token.
+        """Load and decrypt OneDrive authentication token.
         
         Returns:
             Token data or None if not found
         """
-        if self.token_path.exists():
-            with open(self.token_path, 'r') as f:
-                return json.load(f)
-        return None
+        if not self.token_path.exists():
+            return None
+        
+        try:
+            # Read encrypted data
+            encrypted_data = self.token_path.read_bytes()
+            
+            # Try to decrypt
+            token_data = self._decrypt_token(encrypted_data)
+            logger.info("Token loaded and decrypted successfully")
+            return token_data
+            
+        except ValueError as e:
+            # Decryption failed - likely old plaintext token or corrupted
+            logger.warning(f"Could not decrypt token: {e}")
+            logger.warning("Token file may be from old version - please re-authenticate")
+            # Delete invalid token
+            self.token_path.unlink(missing_ok=True)
+            return None
+        except Exception as e:
+            logger.error(f"Error loading token: {e}")
+            return None
     
     def save_state(self, state_data: Dict[str, Any]) -> None:
         """Save sync state.

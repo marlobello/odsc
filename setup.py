@@ -35,6 +35,9 @@ setup(
         "dbus-python>=1.3.2",
         "python-dateutil>=2.8.2",
         "send2trash>=1.8.0",
+        "cryptography>=41.0.0",
+        "keyring>=24.0.0",
+        "certifi>=2023.7.22",
     ],
     entry_points={
         "console_scripts": [

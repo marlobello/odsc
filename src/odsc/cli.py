@@ -17,6 +17,7 @@ class AuthCallbackHandler(http.server.SimpleHTTPRequestHandler):
     """HTTP handler for OAuth callback."""
     
     auth_code = None
+    state = None  # For CSRF validation
     
     def do_GET(self):
         """Handle GET request for OAuth callback."""
@@ -25,6 +26,7 @@ class AuthCallbackHandler(http.server.SimpleHTTPRequestHandler):
             params = parse_qs(parsed.query)
             if 'code' in params:
                 AuthCallbackHandler.auth_code = params['code'][0]
+                AuthCallbackHandler.state = params.get('state', [None])[0]
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html')
                 self.end_headers()
@@ -59,10 +61,11 @@ def cmd_auth(args):
     print(f"If browser doesn't open, visit: {auth_url}")
     webbrowser.open(auth_url)
     
-    # Start local server for callback
+    # Start local server for callback (localhost only for security)
     print("Waiting for authentication...")
     try:
-        with socketserver.TCPServer(("", 8080), AuthCallbackHandler) as httpd:
+        with socketserver.TCPServer(("127.0.0.1", 8080), AuthCallbackHandler) as httpd:
+            httpd.timeout = 300  # 5 minute timeout
             httpd.handle_request()
     except OSError as e:
         if e.errno == 98:  # Address already in use
@@ -71,6 +74,15 @@ def cmd_auth(args):
         raise
     
     if AuthCallbackHandler.auth_code:
+        # Validate state parameter for CSRF protection
+        if AuthCallbackHandler.state:
+            if not client.validate_state(AuthCallbackHandler.state):
+                print("✗ Authentication failed: Invalid state parameter (possible CSRF attack)")
+                return 1
+        else:
+            print("✗ Authentication failed: No state parameter received")
+            return 1
+        
         try:
             token_data = client.exchange_code(AuthCallbackHandler.auth_code)
             config.save_token(token_data)

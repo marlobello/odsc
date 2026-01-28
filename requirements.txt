@@ -29,3 +29,8 @@ python-dateutil>=2.8.2
 
 # Desktop trash integration
 send2trash>=1.8.0
+
+# Security - Token encryption
+cryptography>=41.0.0
+keyring>=24.0.0
+certifi>=2023.7.22

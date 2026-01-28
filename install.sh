@@ -41,7 +41,10 @@ if command -v apt-get &> /dev/null; then
         python3-requests \
         python3-watchdog \
         python3-dateutil \
-        python3-send2trash
+        python3-send2trash \
+        python3-cryptography \
+        python3-keyring \
+        python3-certifi
     echo "✓ All system dependencies and Python packages installed"
 elif command -v dnf &> /dev/null; then
     echo "Detected Fedora/RHEL system"
@@ -53,7 +56,10 @@ elif command -v dnf &> /dev/null; then
         python3-requests \
         python3-watchdog \
         python3-dateutil \
-        python3-send2trash
+        python3-send2trash \
+        python3-cryptography \
+        python3-keyring \
+        python3-certifi
     echo "✓ All system dependencies and Python packages installed"
 else
     echo "Warning: Could not detect package manager."

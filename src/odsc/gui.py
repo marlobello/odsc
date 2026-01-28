@@ -89,6 +89,7 @@ class AuthCallbackHandler(http.server.SimpleHTTPRequestHandler):
     """HTTP handler for OAuth callback."""
     
     auth_code = None
+    state = None  # For CSRF validation
     
     def do_GET(self):
         """Handle GET request for OAuth callback."""
@@ -97,6 +98,7 @@ class AuthCallbackHandler(http.server.SimpleHTTPRequestHandler):
             params = parse_qs(parsed.query)
             if 'code' in params:
                 AuthCallbackHandler.auth_code = params['code'][0]
+                AuthCallbackHandler.state = params.get('state', [None])[0]
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html')
                 self.end_headers()
@@ -687,15 +689,29 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         # Open browser for auth
         webbrowser.open(auth_url)
         
-        # Start local server to receive callback
+        # Start local server to receive callback (localhost only for security)
         def wait_for_callback():
             try:
-                logger.info("Starting local callback server on port 8080")
-                with socketserver.TCPServer(("", 8080), AuthCallbackHandler) as httpd:
+                logger.info("Starting local callback server on localhost:8080")
+                with socketserver.TCPServer(("127.0.0.1", 8080), AuthCallbackHandler) as httpd:
+                    httpd.timeout = 300  # 5 minute timeout
                     logger.debug("Waiting for OAuth callback...")
                     httpd.handle_request()
                     
                     if AuthCallbackHandler.auth_code:
+                        # Validate state parameter for CSRF protection
+                        if AuthCallbackHandler.state:
+                            if not temp_client.validate_state(AuthCallbackHandler.state):
+                                logger.error("State validation failed")
+                                GLib.idle_add(self._show_error, 
+                                            "Authentication failed:\nInvalid state parameter (possible CSRF attack)")
+                                return
+                        else:
+                            logger.error("No state parameter received")
+                            GLib.idle_add(self._show_error, 
+                                        "Authentication failed:\nNo state parameter received")
+                            return
+                        
                         logger.info("Received authorization code from callback")
                         try:
                             token_data = temp_client.exchange_code(AuthCallbackHandler.auth_code)

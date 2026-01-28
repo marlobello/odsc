@@ -4,12 +4,15 @@
 import logging
 import os
 import time
+import re
+import secrets
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import requests
+import certifi
 
 
 logger = logging.getLogger(__name__)
@@ -41,23 +44,66 @@ class OneDriveClient:
         self.client_id = client_id or self.DEFAULT_CLIENT_ID
         self.token_data = token_data or {}
         self._session = requests.Session()
+        self._session.verify = certifi.where()  # Explicit certificate validation
+        self.state: Optional[str] = None  # For CSRF protection
+    
+    def _sanitize_for_log(self, text: str) -> str:
+        """Remove sensitive data from log output.
+        
+        Args:
+            text: Text to sanitize
+            
+        Returns:
+            Sanitized text with sensitive data redacted
+        """
+        # Redact tokens and codes
+        text = re.sub(r'(access_token|refresh_token|code)["\']?\s*[:=]\s*["\']?[\w\-\.]+', 
+                     r'\1=***REDACTED***', text, flags=re.IGNORECASE)
+        text = re.sub(r'Bearer\s+[\w\-\.]+', 'Bearer ***REDACTED***', text, flags=re.IGNORECASE)
+        return text
     
     def get_auth_url(self) -> str:
-        """Get OAuth2 authorization URL.
+        """Get OAuth2 authorization URL with CSRF protection.
         
         Returns:
             Authorization URL
         """
+        # Generate CSRF protection state parameter
+        self.state = secrets.token_urlsafe(32)
+        
         params = {
             'client_id': self.client_id,
             'scope': self.SCOPES,
             'response_type': 'code',
             'redirect_uri': self.REDIRECT_URI,
+            'state': self.state,  # CSRF protection
         }
         auth_url = f"{self.AUTH_URL}?{urlencode(params)}"
-        logger.debug(f"Generated auth URL with client_id={self.client_id}")
-        logger.debug(f"Auth URL: {auth_url}")
+        logger.info("Generated authorization URL with CSRF protection")
         return auth_url
+    
+    def validate_state(self, received_state: str) -> bool:
+        """Validate OAuth state parameter for CSRF protection.
+        
+        Args:
+            received_state: State parameter received from OAuth callback
+            
+        Returns:
+            True if state is valid, False otherwise
+        """
+        if not self.state:
+            logger.error("No state was generated - possible attack")
+            return False
+        
+        is_valid = self.state == received_state
+        if not is_valid:
+            logger.error("State validation failed - possible CSRF attack")
+        else:
+            logger.info("State validation successful")
+        
+        # Clear state after validation (one-time use)
+        self.state = None
+        return is_valid
     
     def exchange_code(self, code: str) -> Dict[str, Any]:
         """Exchange authorization code for access token.
@@ -75,32 +121,25 @@ class OneDriveClient:
             'grant_type': 'authorization_code',
         }
         
-        logger.info(f"Exchanging authorization code for access token")
-        logger.debug(f"Token exchange URL: {self.TOKEN_URL}")
-        logger.debug(f"Token exchange data: client_id={self.client_id}, redirect_uri={self.REDIRECT_URI}, grant_type=authorization_code")
-        logger.debug(f"Authorization code (first 10 chars): {code[:10]}...")
+        logger.info("Exchanging authorization code for access token")
         
         try:
-            response = requests.post(self.TOKEN_URL, data=data)
+            response = requests.post(self.TOKEN_URL, data=data, verify=certifi.where(), timeout=30)
             logger.debug(f"Token exchange response status: {response.status_code}")
-            logger.debug(f"Token exchange response headers: {dict(response.headers)}")
             
             if response.status_code != 200:
                 logger.error(f"Token exchange failed with status {response.status_code}")
-                logger.error(f"Response body: {response.text}")
+                logger.error(f"Response: {self._sanitize_for_log(response.text)}")
             
             response.raise_for_status()
             
             self.token_data = response.json()
-            logger.debug(f"Token data keys: {list(self.token_data.keys())}")
             self.token_data['expires_at'] = time.time() + self.token_data.get('expires_in', 3600)
             logger.info("Successfully obtained access token")
             return self.token_data
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Token exchange request failed: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Error response body: {e.response.text}")
+            logger.error(f"Token exchange request failed: {self._sanitize_for_log(str(e))}")
             raise
     
     def refresh_token(self) -> Dict[str, Any]:
@@ -121,15 +160,13 @@ class OneDriveClient:
             'grant_type': 'refresh_token',
         }
         
-        logger.debug(f"Refresh token request to {self.TOKEN_URL}")
-        
         try:
-            response = requests.post(self.TOKEN_URL, data=data)
+            response = requests.post(self.TOKEN_URL, data=data, verify=certifi.where(), timeout=30)
             logger.debug(f"Refresh token response status: {response.status_code}")
             
             if response.status_code != 200:
                 logger.error(f"Token refresh failed with status {response.status_code}")
-                logger.error(f"Response body: {response.text}")
+                logger.error(f"Response: {self._sanitize_for_log(response.text)}")
             
             response.raise_for_status()
             
@@ -139,9 +176,7 @@ class OneDriveClient:
             return self.token_data
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Token refresh failed: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Error response body: {e.response.text}")
+            logger.error(f"Token refresh failed: {self._sanitize_for_log(str(e))}")
             raise
     
     def _ensure_token(self) -> None:
