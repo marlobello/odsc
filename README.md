@@ -8,7 +8,7 @@ A Ubuntu/GNOME-based sync client for Microsoft OneDrive (personal) that runs as 
 - **Event-Driven & Periodic Sync**: Monitors file changes in real-time and performs periodic full syncs
 - **GNOME GTK Interface**: Native GUI showing OneDrive files with sync status
 - **Selective Download**: View all OneDrive files without downloading them; download only when needed
-- **OAuth2 Authentication**: Secure authentication with Microsoft OneDrive
+- **OAuth2 Authentication**: Secure authentication with Microsoft OneDrive (no app registration required!)
 - **Systemd Integration**: Run as a system service with auto-start capability
 
 ## Prerequisites
@@ -16,7 +16,7 @@ A Ubuntu/GNOME-based sync client for Microsoft OneDrive (personal) that runs as 
 - Ubuntu 20.04+ (or any Linux distribution with GNOME 3.x+)
 - Python 3.8 or higher
 - GTK 3.0 development libraries
-- Microsoft Azure Application (for OAuth2)
+- Microsoft account with OneDrive (personal or Microsoft 365 Family subscription)
 
 ## Installation
 
@@ -46,27 +46,6 @@ Or install dependencies manually:
 pip3 install -r requirements.txt
 ```
 
-### 4. Set Up Microsoft Azure Application
-
-To use OneDrive API, you need to register an application in Azure:
-
-1. Go to [Azure Portal](https://portal.azure.com)
-2. Navigate to "Azure Active Directory" > "App registrations" > "New registration"
-3. Name: "ODSC" (or any name you prefer)
-4. Supported account types: "Accounts in any organizational directory and personal Microsoft accounts"
-5. Redirect URI: Web - `http://localhost:8080`
-6. Click "Register"
-7. Copy the "Application (client) ID" - you'll need this for authentication
-
-### 5. Configure Permissions
-
-In your Azure app:
-
-1. Go to "API permissions"
-2. Add permission > Microsoft Graph > Delegated permissions
-3. Add: `Files.ReadWrite` and `offline_access`
-4. Click "Grant admin consent"
-
 ## Usage
 
 ### First-Time Setup
@@ -78,9 +57,9 @@ In your Azure app:
 
 2. **Authenticate**:
    - Click "Authenticate" in the toolbar
-   - Enter your Azure Application Client ID
    - A browser window will open for Microsoft authentication
-   - Log in and authorize the application
+   - Log in with your Microsoft account
+   - Authorize the application
    - Return to the GUI (authentication will complete automatically)
 
 3. **Configure Settings**:
@@ -153,9 +132,9 @@ Configuration is stored in `~/.config/odsc/config.json`:
 ### Authentication Issues
 
 If authentication fails:
-1. Verify your Client ID is correct
-2. Check that redirect URI is set to `http://localhost:8080` in Azure
-3. Ensure required permissions are granted in Azure
+1. Ensure port 8080 is not in use by another application
+2. Check your internet connection
+3. Try authenticating again with `odsc auth` or through the GUI
 
 ### Sync Not Working
 

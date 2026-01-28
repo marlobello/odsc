@@ -76,9 +76,8 @@ class OneDriveGUI(Gtk.Window):
         Returns:
             True if successful
         """
-        client_id = self.config.client_id
-        if not client_id:
-            return False
+        # client_id is optional - will use default if not configured
+        client_id = self.config.client_id or None
         
         token_data = self.config.load_token()
         self.client = OneDriveClient(client_id, token_data)
@@ -177,23 +176,13 @@ class OneDriveGUI(Gtk.Window):
     
     def _on_auth_clicked(self, widget) -> None:
         """Handle authentication button click."""
-        dialog = AuthDialog(self)
-        response = dialog.run()
-        
-        if response == Gtk.ResponseType.OK:
-            client_id = dialog.client_id_entry.get_text()
-            if client_id:
-                self.config.set('client_id', client_id)
-                self._authenticate()
-        
-        dialog.destroy()
+        # Simply start authentication without asking for client ID
+        self._authenticate()
     
     def _authenticate(self) -> None:
         """Perform OneDrive authentication."""
-        client_id = self.config.client_id
-        if not client_id:
-            self._show_error("Please set Client ID in authentication dialog")
-            return
+        # Use configured client_id or None to use default
+        client_id = self.config.client_id or None
         
         # Create temporary client for auth
         temp_client = OneDriveClient(client_id)

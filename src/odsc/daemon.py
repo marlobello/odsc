@@ -98,10 +98,8 @@ class SyncDaemon:
         Returns:
             True if initialization successful
         """
-        client_id = self.config.client_id
-        if not client_id:
-            logger.error("No client_id configured. Please set it in config.")
-            return False
+        # client_id is optional - will use default if not configured
+        client_id = self.config.client_id or None
         
         # Load existing token
         token_data = self.config.load_token()

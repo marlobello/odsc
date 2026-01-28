@@ -45,11 +45,8 @@ def cmd_auth(args):
     """Authenticate with OneDrive."""
     config = Config()
     
-    # Get or set client ID
-    client_id = args.client_id or config.client_id
-    if not client_id:
-        print("Error: Client ID required. Use --client-id or configure it first.")
-        return 1
+    # Get client ID (optional - will use default if not provided)
+    client_id = args.client_id or config.client_id or None
     
     if args.client_id:
         config.set('client_id', args.client_id)
@@ -95,7 +92,7 @@ def cmd_status(args):
     print("=" * 40)
     print(f"Sync Directory: {config.sync_directory}")
     print(f"Sync Interval: {config.sync_interval} seconds")
-    print(f"Client ID: {config.client_id or '(not set)'}")
+    print(f"Client ID: {config.client_id or '(using default)'}")
     
     # Check authentication
     token = config.load_token()
@@ -160,10 +157,8 @@ def cmd_list(args):
         print("Error: Not authenticated. Run 'odsc auth' first.")
         return 1
     
-    client_id = config.client_id
-    if not client_id:
-        print("Error: Client ID not configured.")
-        return 1
+    # client_id is optional - will use default if not configured
+    client_id = config.client_id or None
     
     client = OneDriveClient(client_id, token)
     
@@ -208,7 +203,7 @@ def main():
     
     # Auth command
     auth_parser = subparsers.add_parser('auth', help='Authenticate with OneDrive')
-    auth_parser.add_argument('--client-id', help='Azure application client ID')
+    auth_parser.add_argument('--client-id', help='Custom Azure application client ID (optional, uses built-in default if not provided)')
     auth_parser.set_defaults(func=cmd_auth)
     
     # Status command

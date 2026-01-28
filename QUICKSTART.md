@@ -11,20 +11,6 @@ cd odsc
 ./install.sh
 ```
 
-## Azure App Registration
-
-1. Go to [Azure Portal](https://portal.azure.com)
-2. Navigate to **Azure Active Directory** → **App registrations** → **New registration**
-3. Settings:
-   - **Name**: OneDrive Sync Client (or any name)
-   - **Supported account types**: "Accounts in any organizational directory and personal Microsoft accounts"
-   - **Redirect URI**: Web → `http://localhost:8080`
-4. Click **Register**
-5. Copy the **Application (client) ID**
-6. Go to **API permissions** → **Add permission** → **Microsoft Graph** → **Delegated permissions**
-7. Add: `Files.ReadWrite` and `offline_access`
-8. Click **Grant admin consent for [Your Directory]**
-
 ## First Use
 
 ```bash
@@ -33,10 +19,12 @@ odsc-gui
 ```
 
 1. Click **Authenticate** button
-2. Enter your **Azure Application Client ID**
-3. Browser will open for Microsoft login
-4. Log in and authorize the application
+2. Browser will open for Microsoft login
+3. Log in with your Microsoft account (personal or Microsoft 365 Family)
+4. Authorize the application
 5. Return to the GUI - authentication completes automatically
+
+**Note**: No Azure app registration required! ODSC uses a built-in client ID that works with OneDrive Consumer accounts.
 
 ## Configure Sync
 
@@ -115,10 +103,11 @@ Edit `~/.config/odsc/config.json` directly:
 ```json
 {
   "sync_directory": "/home/user/OneDrive",
-  "sync_interval": 300,
-  "client_id": "your-client-id"
+  "sync_interval": 300
 }
 ```
+
+**Note**: The `client_id` field is optional. If not specified, ODSC uses a default client ID that works with OneDrive Consumer.
 
 ### Multiple Sync Directories
 Currently, only one sync directory is supported per configuration.

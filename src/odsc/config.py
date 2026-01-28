@@ -42,7 +42,6 @@ class Config:
             self._config = {
                 'sync_directory': str(self.DEFAULT_SYNC_DIR),
                 'sync_interval': 300,  # 5 minutes
-                'client_id': '',  # User must set this
                 'auto_start': False,
             }
             self.save()

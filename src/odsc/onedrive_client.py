@@ -25,14 +25,19 @@ class OneDriveClient:
     REDIRECT_URI = "http://localhost:8080"
     SCOPES = "files.readwrite offline_access"
     
-    def __init__(self, client_id: str, token_data: Optional[Dict[str, Any]] = None):
+    # Default public client ID for OneDrive Consumer
+    # This is Microsoft's legacy OneDrive application ID that works with personal accounts
+    # It's a well-known public client that doesn't require app registration
+    DEFAULT_CLIENT_ID = "0000000040126752"
+    
+    def __init__(self, client_id: Optional[str] = None, token_data: Optional[Dict[str, Any]] = None):
         """Initialize OneDrive client.
         
         Args:
-            client_id: Microsoft application client ID
+            client_id: Microsoft application client ID (optional, uses default if not provided)
             token_data: Existing token data (optional)
         """
-        self.client_id = client_id
+        self.client_id = client_id or self.DEFAULT_CLIENT_ID
         self.token_data = token_data or {}
         self._session = requests.Session()
     
