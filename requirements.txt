@@ -1,5 +1,4 @@
-# OneDrive API
-onedrivesdk>=1.1.8
+# OneDrive API (using Microsoft Graph directly)
 requests>=2.31.0
 
 # File system monitoring

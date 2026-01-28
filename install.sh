@@ -51,7 +51,7 @@ fi
 # Install Python package
 echo ""
 echo "Installing ODSC Python package..."
-pip3 install -e .
+pip3 install --user -e .
 echo "✓ Python package installed"
 
 # Create sync directory

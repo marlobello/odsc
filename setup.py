@@ -29,7 +29,6 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=[
-        "onedrivesdk>=1.1.8",
         "requests>=2.31.0",
         "watchdog>=3.0.0",
         "PyGObject>=3.42.0",

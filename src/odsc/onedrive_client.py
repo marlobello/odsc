@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 
 import requests
 
@@ -47,7 +48,7 @@ class OneDriveClient:
             'response_type': 'code',
             'redirect_uri': self.REDIRECT_URI,
         }
-        return f"{self.AUTH_URL}?{'&'.join(f'{k}={v}' for k, v in params.items())}"
+        return f"{self.AUTH_URL}?{urlencode(params)}"
     
     def exchange_code(self, code: str) -> Dict[str, Any]:
         """Exchange authorization code for access token.

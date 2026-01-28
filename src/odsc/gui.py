@@ -204,19 +204,25 @@ class OneDriveGUI(Gtk.Window):
         
         # Start local server to receive callback
         def wait_for_callback():
-            with socketserver.TCPServer(("", 8080), AuthCallbackHandler) as httpd:
-                httpd.handle_request()
-                
-                if AuthCallbackHandler.auth_code:
-                    try:
-                        token_data = temp_client.exchange_code(AuthCallbackHandler.auth_code)
-                        self.config.save_token(token_data)
-                        self.client = temp_client
-                        
-                        GLib.idle_add(self._on_auth_success)
-                    except Exception as e:
-                        logger.error(f"Auth failed: {e}")
-                        GLib.idle_add(self._show_error, f"Authentication failed: {e}")
+            try:
+                with socketserver.TCPServer(("", 8080), AuthCallbackHandler) as httpd:
+                    httpd.handle_request()
+                    
+                    if AuthCallbackHandler.auth_code:
+                        try:
+                            token_data = temp_client.exchange_code(AuthCallbackHandler.auth_code)
+                            self.config.save_token(token_data)
+                            self.client = temp_client
+                            
+                            GLib.idle_add(self._on_auth_success)
+                        except Exception as e:
+                            logger.error(f"Auth failed: {e}")
+                            GLib.idle_add(self._show_error, f"Authentication failed: {e}")
+            except OSError as e:
+                if e.errno == 98:  # Address already in use
+                    GLib.idle_add(self._show_error, "Port 8080 is already in use. Please close other applications using this port.")
+                else:
+                    GLib.idle_add(self._show_error, f"Network error: {e}")
         
         thread = threading.Thread(target=wait_for_callback, daemon=True)
         thread.start()
@@ -392,8 +398,8 @@ class AuthDialog(Gtk.Dialog):
         """Initialize dialog."""
         Gtk.Dialog.__init__(self, title="OneDrive Authentication", transient_for=parent, flags=0)
         self.add_buttons(
-            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            Gtk.STOCK_OK, Gtk.ResponseType.OK
+            "Cancel", Gtk.ResponseType.CANCEL,
+            "OK", Gtk.ResponseType.OK
         )
         
         self.set_default_size(400, 150)
@@ -422,7 +428,7 @@ class SettingsDialog(Gtk.Dialog):
     def __init__(self, parent, config: Config):
         """Initialize dialog."""
         Gtk.Dialog.__init__(self, title="Settings", transient_for=parent, flags=0)
-        self.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        self.add_buttons("Close", Gtk.ResponseType.CLOSE)
         
         self.config = config
         self.set_default_size(400, 200)

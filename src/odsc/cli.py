@@ -64,8 +64,14 @@ def cmd_auth(args):
     
     # Start local server for callback
     print("Waiting for authentication...")
-    with socketserver.TCPServer(("", 8080), AuthCallbackHandler) as httpd:
-        httpd.handle_request()
+    try:
+        with socketserver.TCPServer(("", 8080), AuthCallbackHandler) as httpd:
+            httpd.handle_request()
+    except OSError as e:
+        if e.errno == 98:  # Address already in use
+            print(f"✗ Port 8080 is already in use. Please close other applications using this port.")
+            return 1
+        raise
     
     if AuthCallbackHandler.auth_code:
         try:

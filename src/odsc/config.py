@@ -103,6 +103,8 @@ class Config:
         """
         with open(self.token_path, 'w') as f:
             json.dump(token_data, f)
+        # Restrict permissions to owner only for security
+        os.chmod(self.token_path, 0o600)
     
     def load_token(self) -> Optional[Dict[str, Any]]:
         """Load OneDrive authentication token.

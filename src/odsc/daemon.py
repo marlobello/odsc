@@ -198,15 +198,27 @@ class SyncDaemon:
         
         sync_dir = self.config.sync_directory
         
+        # Ensure 'files' key exists in state
+        if 'files' not in self.state:
+            self.state['files'] = {}
+        
         # Scan local directory
         local_files = {}
         for path in sync_dir.rglob('*'):
+            # Skip hidden files and directories
+            if any(part.startswith('.') for part in path.parts):
+                continue
+            
             if path.is_file():
-                rel_path = path.relative_to(sync_dir)
-                local_files[str(rel_path)] = {
-                    'path': path,
-                    'mtime': path.stat().st_mtime,
-                }
+                try:
+                    rel_path = path.relative_to(sync_dir)
+                    local_files[str(rel_path)] = {
+                        'path': path,
+                        'mtime': path.stat().st_mtime,
+                    }
+                except (OSError, PermissionError) as e:
+                    logger.warning(f"Cannot access {path}: {e}")
+                    continue
         
         # Upload new/modified files
         for rel_path, info in local_files.items():
