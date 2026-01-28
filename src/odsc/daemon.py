@@ -192,14 +192,43 @@ class SyncDaemon:
         return elapsed >= self.config.sync_interval
     
     def _do_periodic_sync(self) -> None:
-        """Perform periodic sync of all files."""
-        logger.info("Starting periodic sync...")
+        """Perform periodic two-way sync of all files."""
+        logger.info("Starting periodic two-way sync...")
         
         sync_dir = self.config.sync_directory
         
         # Ensure 'files' key exists in state
         if 'files' not in self.state:
             self.state['files'] = {}
+        
+        # Get all files from OneDrive
+        logger.info("Fetching remote file list...")
+        try:
+            remote_items = self.client.list_all_files()
+        except Exception as e:
+            logger.error(f"Failed to fetch remote files: {e}", exc_info=True)
+            return
+        
+        # Build map of remote files (excluding folders)
+        remote_files = {}
+        for item in remote_items:
+            if 'folder' not in item:
+                # Extract path
+                parent_path = item.get('parentReference', {}).get('path', '').replace('/drive/root:', '')
+                name = item.get('name', '')
+                if parent_path:
+                    full_path = parent_path.lstrip('/') + '/' + name
+                else:
+                    full_path = name
+                
+                remote_files[full_path] = {
+                    'id': item['id'],
+                    'size': item.get('size', 0),
+                    'eTag': item.get('eTag', ''),
+                    'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
+                }
+        
+        logger.info(f"Found {len(remote_files)} remote files")
         
         # Scan local directory
         local_files = {}
@@ -210,37 +239,145 @@ class SyncDaemon:
             
             if path.is_file():
                 try:
-                    rel_path = path.relative_to(sync_dir)
-                    local_files[str(rel_path)] = {
+                    rel_path = str(path.relative_to(sync_dir))
+                    local_files[rel_path] = {
                         'path': path,
                         'mtime': path.stat().st_mtime,
+                        'size': path.stat().st_size,
                     }
                 except (OSError, PermissionError) as e:
                     logger.warning(f"Cannot access {path}: {e}")
                     continue
         
-        # Upload new/modified files
-        for rel_path, info in local_files.items():
-            state_entry = self.state['files'].get(rel_path)
+        logger.info(f"Found {len(local_files)} local files")
+        
+        # Process each file with robust conflict detection
+        all_paths = set(local_files.keys()) | set(remote_files.keys())
+        
+        for rel_path in all_paths:
+            local_info = local_files.get(rel_path)
+            remote_info = remote_files.get(rel_path)
+            state_entry = self.state['files'].get(rel_path, {})
             
-            # Check if file is new or modified
-            if not state_entry or state_entry['mtime'] < info['mtime']:
-                try:
-                    logger.info(f"Uploading new/modified file: {rel_path}")
-                    self.client.upload_file(info['path'], rel_path)
+            try:
+                action = self._determine_sync_action(rel_path, local_info, remote_info, state_entry)
+                
+                if action == 'upload':
+                    logger.info(f"Uploading: {rel_path}")
+                    metadata = self.client.upload_file(local_info['path'], rel_path)
                     self.state['files'][rel_path] = {
-                        'mtime': info['mtime'],
-                        'synced': True,
+                        'mtime': local_info['mtime'],
+                        'size': local_info['size'],
+                        'eTag': metadata.get('eTag', ''),
+                        'remote_modified': metadata.get('lastModifiedDateTime', ''),
                     }
-                    logger.info(f"Successfully uploaded: {rel_path}")
-                except Exception as e:
-                    logger.error(f"Failed to upload {rel_path}: {e}", exc_info=True)
+                    
+                elif action == 'download':
+                    logger.info(f"Downloading: {rel_path}")
+                    local_path = sync_dir / rel_path
+                    metadata = self.client.download_file(remote_info['id'], local_path)
+                    self.state['files'][rel_path] = {
+                        'mtime': local_path.stat().st_mtime,
+                        'size': remote_info['size'],
+                        'eTag': remote_info['eTag'],
+                        'remote_modified': remote_info['lastModifiedDateTime'],
+                    }
+                    
+                elif action == 'conflict':
+                    logger.warning(f"CONFLICT detected for {rel_path} - keeping both versions")
+                    # Keep local version and download remote as .conflict file
+                    conflict_path = sync_dir / f"{rel_path}.conflict"
+                    metadata = self.client.download_file(remote_info['id'], conflict_path)
+                    logger.info(f"Saved remote version as: {conflict_path}")
+                    
+                elif action == 'skip':
+                    logger.debug(f"Skipping (up to date): {rel_path}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
         
         # Update sync time
         self.state['last_sync'] = datetime.now().isoformat()
         self.config.save_state(self.state)
         
         logger.info("Periodic sync completed")
+    
+    def _determine_sync_action(self, rel_path: str, local_info: Optional[Dict], 
+                               remote_info: Optional[Dict], state_entry: Dict) -> str:
+        """Determine what sync action to take for a file.
+        
+        Args:
+            rel_path: Relative file path
+            local_info: Local file info (or None if doesn't exist locally)
+            remote_info: Remote file info (or None if doesn't exist remotely)
+            state_entry: Last known sync state
+            
+        Returns:
+            Action: 'upload', 'download', 'conflict', or 'skip'
+        """
+        # Case 1: File only exists locally (new local file)
+        if local_info and not remote_info:
+            if not state_entry:
+                # Never synced before, upload it
+                return 'upload'
+            elif state_entry.get('eTag'):
+                # Was synced before but now missing remotely (deleted remotely)
+                logger.info(f"{rel_path} was deleted remotely, keeping local")
+                return 'skip'
+            else:
+                return 'upload'
+        
+        # Case 2: File only exists remotely (new remote file or deleted locally)
+        if remote_info and not local_info:
+            if not state_entry:
+                # Never synced before, download it
+                return 'download'
+            elif state_entry.get('mtime'):
+                # Was synced before but now deleted locally (user deleted)
+                logger.info(f"{rel_path} was deleted locally, keeping deleted")
+                return 'skip'
+            else:
+                return 'download'
+        
+        # Case 3: File exists both locally and remotely
+        if local_info and remote_info:
+            # Check if we've synced this file before
+            if not state_entry:
+                # No sync state - compare by size
+                if local_info['size'] == remote_info['size']:
+                    # Assume same, record state
+                    return 'skip'
+                else:
+                    # Different sizes, potential conflict - prefer newer
+                    return 'conflict'
+            
+            # Check if local file changed since last sync
+            local_changed = (
+                state_entry.get('mtime', 0) != local_info['mtime'] or
+                state_entry.get('size', 0) != local_info['size']
+            )
+            
+            # Check if remote file changed since last sync
+            remote_changed = (
+                state_entry.get('eTag', '') != remote_info['eTag'] or
+                state_entry.get('remote_modified', '') != remote_info['lastModifiedDateTime']
+            )
+            
+            if local_changed and remote_changed:
+                # Both changed - conflict!
+                logger.warning(f"Both local and remote changed: {rel_path}")
+                return 'conflict'
+            elif local_changed:
+                # Only local changed - upload
+                return 'upload'
+            elif remote_changed:
+                # Only remote changed - download
+                return 'download'
+            else:
+                # Neither changed
+                return 'skip'
+        
+        return 'skip'
     
     def _sync_file(self, path: Path) -> None:
         """Sync a single file to OneDrive.

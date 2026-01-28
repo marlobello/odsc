@@ -218,13 +218,38 @@ class OneDriveClient:
         
         return all_items
     
-    def download_file(self, file_id: str, local_path: Path) -> None:
+    def get_file_by_path(self, remote_path: str) -> Optional[Dict[str, Any]]:
+        """Get file metadata by path.
+        
+        Args:
+            remote_path: Remote file path
+            
+        Returns:
+            File metadata or None if not found
+        """
+        remote_path = remote_path.lstrip('/')
+        
+        try:
+            endpoint = f"/me/drive/root:/{remote_path}"
+            response = self._api_request('GET', endpoint)
+            return response.json()
+        except Exception as e:
+            logger.debug(f"File not found on OneDrive: {remote_path}")
+            return None
+    
+    def download_file(self, file_id: str, local_path: Path) -> Dict[str, Any]:
         """Download file from OneDrive.
         
         Args:
             file_id: OneDrive file ID
             local_path: Local destination path
+            
+        Returns:
+            File metadata including eTag
         """
+        # Get metadata first
+        metadata = self.get_file_metadata(file_id)
+        
         endpoint = f"/me/drive/items/{file_id}/content"
         response = self._api_request('GET', endpoint, stream=True)
         
@@ -234,6 +259,7 @@ class OneDriveClient:
                 f.write(chunk)
         
         logger.info(f"Downloaded: {local_path}")
+        return metadata
     
     def upload_file(self, local_path: Path, remote_path: str) -> Dict[str, Any]:
         """Upload file to OneDrive.
@@ -243,7 +269,7 @@ class OneDriveClient:
             remote_path: Remote destination path
             
         Returns:
-            Upload response metadata
+            Upload response metadata including eTag
         """
         # Remove leading slash
         remote_path = remote_path.lstrip('/')
@@ -254,8 +280,9 @@ class OneDriveClient:
             headers = {'Content-Type': 'application/octet-stream'}
             response = self._api_request('PUT', endpoint, data=f, headers=headers)
         
+        metadata = response.json()
         logger.info(f"Uploaded: {local_path} -> {remote_path}")
-        return response.json()
+        return metadata
     
     def delete_file(self, file_id: str) -> None:
         """Delete file from OneDrive.
