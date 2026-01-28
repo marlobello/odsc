@@ -196,27 +196,27 @@ class OneDriveClient:
         return data.get('value', [])
     
     def list_all_files(self, path: str = "/") -> List[Dict[str, Any]]:
-        """Recursively list all files in OneDrive.
+        """Recursively list all files and folders in OneDrive.
         
         Args:
             path: Starting directory path
             
         Returns:
-            List of all file metadata
+            List of all file and folder metadata
         """
-        all_files = []
+        all_items = []
         items = self.list_files(path)
         
         for item in items:
+            # Add the item itself (file or folder)
+            all_items.append(item)
+            
             if 'folder' in item:
                 # It's a folder, recurse into it
                 folder_path = item['parentReference'].get('path', '').replace('/drive/root:', '') + '/' + item['name']
-                all_files.extend(self.list_all_files(folder_path))
-            else:
-                # It's a file
-                all_files.append(item)
+                all_items.extend(self.list_all_files(folder_path))
         
-        return all_files
+        return all_items
     
     def download_file(self, file_id: str, local_path: Path) -> None:
         """Download file from OneDrive.
