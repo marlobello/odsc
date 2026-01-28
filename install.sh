@@ -29,18 +29,22 @@ echo "✓ Python $python_version found"
 echo ""
 echo "Installing system dependencies and Python packages..."
 if command -v apt-get &> /dev/null; then
+    echo "Detected Debian/Ubuntu system"
     sudo apt-get update
     sudo apt-get install -y \
         python3-pip \
         python3-gi \
         python3-gi-cairo \
         gir1.2-gtk-3.0 \
+        gir1.2-gio-2.0 \
         python3-dbus \
         python3-requests \
         python3-watchdog \
-        python3-dateutil
-    echo "✓ System dependencies and Python packages installed"
+        python3-dateutil \
+        python3-send2trash
+    echo "✓ All system dependencies and Python packages installed"
 elif command -v dnf &> /dev/null; then
+    echo "Detected Fedora/RHEL system"
     sudo dnf install -y \
         python3-pip \
         python3-gobject \
@@ -48,17 +52,23 @@ elif command -v dnf &> /dev/null; then
         python3-dbus \
         python3-requests \
         python3-watchdog \
-        python3-dateutil
-    echo "✓ System dependencies and Python packages installed"
+        python3-dateutil \
+        python3-send2trash
+    echo "✓ All system dependencies and Python packages installed"
 else
-    echo "Warning: Could not detect package manager. Please install dependencies manually."
+    echo "Warning: Could not detect package manager."
+    echo "Please install the following dependencies manually:"
+    echo "  - Python 3.8+"
+    echo "  - GTK 3 (python3-gi)"
+    echo "  - D-Bus (python3-dbus)"
+    echo "  - Python packages: requests, watchdog, dateutil, send2trash"
 fi
 
-# Install ODSC package (setup.py only installs entry points, not dependencies)
+# Install ODSC package in editable mode
 echo ""
-echo "Installing ODSC entry points..."
+echo "Installing ODSC..."
 pip3 install --user --break-system-packages -e . --no-deps
-echo "✓ ODSC installed"
+echo "✓ ODSC installed in editable mode"
 
 # Create sync directory
 echo ""
@@ -74,32 +84,50 @@ cp desktop/odsc.svg "$HOME/.local/share/icons/hicolor/scalable/apps/"
 gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 echo "✓ Application icon installed"
 
-# Install systemd service (optional)
+# Install systemd service
 echo ""
-read -p "Do you want to install the systemd service? (y/n) " -n 1 -r
+read -p "Install systemd service for background sync? [Y/n] " -n 1 -r
 echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
+# Default to yes if user just presses enter
+if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
     mkdir -p "$HOME/.config/systemd/user"
     cp systemd/odsc.service "$HOME/.config/systemd/user/"
     systemctl --user daemon-reload
     echo "✓ Systemd service installed"
+    
+    # Ask about enabling on startup
     echo ""
-    echo "To enable auto-start on login:"
-    echo "  systemctl --user enable odsc"
-    echo "To start the service now:"
-    echo "  systemctl --user start odsc"
+    read -p "Enable service to start automatically on login? [Y/n] " -n 1 -r
+    echo
+    if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
+        systemctl --user enable odsc
+        echo "✓ Service enabled for auto-start"
+    fi
+    
+    # Ask about starting now
+    read -p "Start service now? [Y/n] " -n 1 -r
+    echo
+    if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
+        systemctl --user start odsc
+        echo "✓ Service started"
+    fi
+else
+    echo "Skipped systemd service installation"
 fi
 
-# Install desktop entry (optional)
+# Install desktop entry for GUI
 echo ""
-read -p "Do you want to install the desktop application entry? (y/n) " -n 1 -r
+read -p "Install desktop application entry for GUI? [Y/n] " -n 1 -r
 echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
+# Default to yes if user just presses enter
+if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
     mkdir -p "$HOME/.local/share/applications"
-    # Install with application ID name for proper GNOME integration
+    # Use application ID name for proper GNOME integration
     cp desktop/odsc.desktop "$HOME/.local/share/applications/com.github.odsc.desktop"
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
     echo "✓ Desktop entry installed"
+else
+    echo "Skipped desktop entry installation"
 fi
 
 echo ""
@@ -109,7 +137,14 @@ echo "==================================="
 echo ""
 echo "Next steps:"
 echo "1. Launch ODSC GUI from your applications menu or run: odsc-gui"
-echo "2. Click 'Authenticate' to log in with your Microsoft account"
-echo "3. Start syncing!"
+echo "2. Go to Authentication → Login to connect your Microsoft account"
+echo "3. Configure sync settings in Settings → Preferences"
+echo "4. Start syncing!"
+echo ""
+echo "Useful commands:"
+echo "  odsc-gui           - Launch the GUI application"
+echo "  odsc status        - View sync status"
+echo "  odsc auth          - Authenticate from command line"
+echo "  systemctl --user status odsc    - Check daemon status"
 echo ""
 echo "For more information, see README.md"
