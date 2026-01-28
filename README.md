@@ -36,15 +36,31 @@ cd odsc
 
 ### 3. Install Python Package
 
+**Option A: Using the install script (recommended)**:
 ```bash
-pip3 install -e .
+./install.sh
 ```
 
-Or install dependencies manually:
+**Option B: Manual installation**:
 
-```bash
-pip3 install -r requirements.txt
-```
+If you encounter an `externally-managed-environment` error, use one of these methods:
+
+1. Install with `--user` flag (recommended for system Python):
+   ```bash
+   pip3 install --user -e .
+   ```
+
+2. Or create a virtual environment (recommended for development):
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -e .
+   ```
+
+3. Or install dependencies manually:
+   ```bash
+   pip3 install --user -r requirements.txt
+   ```
 
 ## Usage
 
