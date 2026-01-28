@@ -113,28 +113,40 @@ class OneDriveGUI(Gtk.Window):
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         vbox.pack_start(scrolled, True, True, 0)
         
-        # TreeView for file list
-        self.file_store = Gtk.ListStore(str, str, str, bool, str)  # name, size, modified, local, id
+        # TreeView for file/folder hierarchy (icon, name, size, modified, local, id, is_folder, path)
+        self.file_store = Gtk.TreeStore(str, str, str, str, bool, str, bool, str)
         self.file_tree = Gtk.TreeView(model=self.file_store)
+        self.file_tree.set_enable_tree_lines(True)
         
-        # Columns
+        # Column 1: Icon + Name
+        column_name = Gtk.TreeViewColumn("Name")
+        
+        # Icon renderer
+        renderer_icon = Gtk.CellRendererPixbuf()
+        column_name.pack_start(renderer_icon, False)
+        column_name.add_attribute(renderer_icon, "icon-name", 0)
+        
+        # Text renderer
         renderer_text = Gtk.CellRendererText()
-        
-        column_name = Gtk.TreeViewColumn("Name", renderer_text, text=0)
+        column_name.pack_start(renderer_text, True)
+        column_name.add_attribute(renderer_text, "text", 1)
         column_name.set_resizable(True)
         column_name.set_min_width(300)
         self.file_tree.append_column(column_name)
         
-        column_size = Gtk.TreeViewColumn("Size", renderer_text, text=1)
+        # Column 2: Size
+        column_size = Gtk.TreeViewColumn("Size", renderer_text, text=2)
         column_size.set_resizable(True)
         self.file_tree.append_column(column_size)
         
-        column_modified = Gtk.TreeViewColumn("Modified", renderer_text, text=2)
+        # Column 3: Modified
+        column_modified = Gtk.TreeViewColumn("Modified", renderer_text, text=3)
         column_modified.set_resizable(True)
         self.file_tree.append_column(column_modified)
         
+        # Column 4: Local checkbox
         renderer_toggle = Gtk.CellRendererToggle()
-        column_local = Gtk.TreeViewColumn("Local", renderer_toggle, active=3)
+        column_local = Gtk.TreeViewColumn("Local", renderer_toggle, active=4)
         self.file_tree.append_column(column_local)
         
         scrolled.add(self.file_tree)
@@ -309,9 +321,14 @@ class OneDriveGUI(Gtk.Window):
         
         for path in paths:
             iter = model.get_iter(path)
-            file_name = model.get_value(iter, 0)
-            file_id = model.get_value(iter, 4)
-            is_local = model.get_value(iter, 3)
+            file_name = model.get_value(iter, 1)
+            file_id = model.get_value(iter, 5)
+            is_local = model.get_value(iter, 4)
+            is_folder = model.get_value(iter, 6)
+            
+            # Skip folders and files that are already local
+            if is_folder:
+                continue
             
             if not is_local and file_id:
                 self._download_file(file_id, file_name)
@@ -340,7 +357,7 @@ class OneDriveGUI(Gtk.Window):
         thread.start()
     
     def _update_file_list(self, files: List[Dict[str, Any]]) -> None:
-        """Update file list view.
+        """Update file list view with folder hierarchy.
         
         Args:
             files: List of file metadata
@@ -350,24 +367,153 @@ class OneDriveGUI(Gtk.Window):
         
         sync_dir = self.config.sync_directory
         
-        for file in files:
-            name = file.get('name', 'Unknown')
-            size = self._format_size(file.get('size', 0))
-            modified = file.get('lastModifiedDateTime', '')
-            file_id = file.get('id', '')
+        logger.debug(f"Building file tree with {len(files)} items")
+        
+        # Build folder hierarchy
+        # Key: folder path, Value: TreeIter
+        folder_iters = {}
+        
+        # Sort: folders first, then by path
+        sorted_items = sorted(files, key=lambda x: (
+            'folder' not in x,  # Folders first
+            x.get('parentReference', {}).get('path', ''),
+            x.get('name', '')
+        ))
+        
+        for item in sorted_items:
+            name = item.get('name', 'Unknown')
+            is_folder = 'folder' in item
+            item_id = item.get('id', '')
             
-            # Check if file exists locally
-            # Extract path from parentReference
-            parent_path = file.get('parentReference', {}).get('path', '')
+            # Get parent path
+            parent_ref = item.get('parentReference', {})
+            parent_path = parent_ref.get('path', '')
             if parent_path:
                 parent_path = parent_path.replace('/drive/root:', '')
             
-            local_path = sync_dir / parent_path.lstrip('/') / name
-            is_local = local_path.exists()
+            # Build full path
+            if parent_path:
+                full_path = parent_path.lstrip('/') + '/' + name
+            else:
+                full_path = name
             
-            self.file_store.append([name, size, modified, is_local, file_id])
+            # Determine parent iter
+            parent_iter = None
+            if parent_path and parent_path != '/':
+                parent_iter = folder_iters.get(parent_path.lstrip('/'))
+            
+            if is_folder:
+                # Add folder
+                icon = "folder"
+                size_str = ""
+                modified = ""
+                is_local = (sync_dir / full_path).exists()
+                
+                iter = self.file_store.append(parent_iter, [
+                    icon, name, size_str, modified, is_local, item_id, True, full_path
+                ])
+                folder_iters[full_path] = iter
+                logger.debug(f"Added folder: {full_path}")
+                
+            else:
+                # Add file
+                icon = self._get_file_icon(name)
+                size = self._format_size(item.get('size', 0))
+                modified = item.get('lastModifiedDateTime', '')[:10] if 'lastModifiedDateTime' in item else ''
+                
+                # Check if file exists locally
+                local_path = sync_dir / full_path
+                is_local = local_path.exists()
+                
+                self.file_store.append(parent_iter, [
+                    icon, name, size, modified, is_local, item_id, False, full_path
+                ])
+                logger.debug(f"Added file: {full_path}")
         
-        self._update_status(f"Loaded {len(files)} files")
+        # Expand root level folders
+        self.file_tree.expand_row(Gtk.TreePath.new_first(), False)
+        
+        self._update_status(f"Loaded {len(files)} items")
+    
+    def _get_file_icon(self, filename: str) -> str:
+        """Get icon name for file type.
+        
+        Args:
+            filename: File name
+            
+        Returns:
+            GTK icon name
+        """
+        # Get file extension
+        ext = filename.lower().split('.')[-1] if '.' in filename else ''
+        
+        # Map extensions to GTK icon names
+        icon_map = {
+            # Documents
+            'pdf': 'x-office-document',
+            'doc': 'x-office-document',
+            'docx': 'x-office-document',
+            'odt': 'x-office-document',
+            'txt': 'text-x-generic',
+            'rtf': 'text-x-generic',
+            
+            # Spreadsheets
+            'xls': 'x-office-spreadsheet',
+            'xlsx': 'x-office-spreadsheet',
+            'ods': 'x-office-spreadsheet',
+            'csv': 'x-office-spreadsheet',
+            
+            # Presentations
+            'ppt': 'x-office-presentation',
+            'pptx': 'x-office-presentation',
+            'odp': 'x-office-presentation',
+            
+            # Images
+            'jpg': 'image-x-generic',
+            'jpeg': 'image-x-generic',
+            'png': 'image-x-generic',
+            'gif': 'image-x-generic',
+            'bmp': 'image-x-generic',
+            'svg': 'image-x-generic',
+            'ico': 'image-x-generic',
+            
+            # Video
+            'mp4': 'video-x-generic',
+            'avi': 'video-x-generic',
+            'mkv': 'video-x-generic',
+            'mov': 'video-x-generic',
+            'wmv': 'video-x-generic',
+            'flv': 'video-x-generic',
+            
+            # Audio
+            'mp3': 'audio-x-generic',
+            'wav': 'audio-x-generic',
+            'flac': 'audio-x-generic',
+            'ogg': 'audio-x-generic',
+            'm4a': 'audio-x-generic',
+            
+            # Archives
+            'zip': 'package-x-generic',
+            'rar': 'package-x-generic',
+            'tar': 'package-x-generic',
+            'gz': 'package-x-generic',
+            '7z': 'package-x-generic',
+            
+            # Code
+            'py': 'text-x-script',
+            'js': 'text-x-script',
+            'java': 'text-x-script',
+            'c': 'text-x-script',
+            'cpp': 'text-x-script',
+            'h': 'text-x-script',
+            'sh': 'text-x-script',
+            'html': 'text-html',
+            'css': 'text-x-script',
+            'xml': 'text-html',
+            'json': 'text-x-script',
+        }
+        
+        return icon_map.get(ext, 'text-x-generic')
     
     def _download_file(self, file_id: str, file_name: str) -> None:
         """Download file from OneDrive.
