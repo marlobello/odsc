@@ -1,3 +1,17 @@
+# Python Package Dependencies for ODSC
+#
+# NOTE: The install.sh script uses SYSTEM PACKAGES (apt-get/dnf) instead of
+# pip to install these dependencies for better system integration and to avoid
+# externally-managed-environment issues on modern Linux distributions.
+#
+# This file is provided for:
+# - Documentation of required packages
+# - Alternative installation method: pip install -r requirements.txt
+# - Development in virtual environments
+# - CI/CD pipelines
+#
+# Dependencies are also listed in setup.py install_requires section.
+
 # OneDrive API (using Microsoft Graph directly)
 requests>=2.31.0
 
