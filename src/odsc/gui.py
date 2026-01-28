@@ -3,9 +3,12 @@
 
 import logging
 import threading
+import subprocess
 import webbrowser
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 import http.server
 import socketserver
 from urllib.parse import urlparse, parse_qs
@@ -19,6 +22,67 @@ from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
+
+
+class DialogHelper:
+    """Reusable dialog utilities to reduce code duplication."""
+    
+    @staticmethod
+    def show_info(parent, title: str, message: str, secondary: str = "") -> None:
+        """Show information dialog."""
+        dialog = Gtk.MessageDialog(
+            transient_for=parent,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text=title
+        )
+        if secondary:
+            dialog.format_secondary_text(secondary)
+        dialog.run()
+        dialog.destroy()
+    
+    @staticmethod
+    def show_confirm(parent, title: str, message: str) -> bool:
+        """Show confirmation dialog. Returns True if user confirms."""
+        dialog = Gtk.MessageDialog(
+            transient_for=parent,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text=title
+        )
+        dialog.format_secondary_text(message)
+        response = dialog.run()
+        dialog.destroy()
+        return response == Gtk.ResponseType.YES
+    
+    @staticmethod
+    def show_error(parent, title: str, message: str) -> None:
+        """Show error dialog."""
+        dialog = Gtk.MessageDialog(
+            transient_for=parent,
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=title
+        )
+        dialog.format_secondary_text(message)
+        dialog.run()
+        dialog.destroy()
+    
+    @staticmethod
+    def show_restart_prompt(parent, title: str, message: str) -> bool:
+        """Show dialog with restart daemon option. Returns True if user wants to restart."""
+        dialog = Gtk.MessageDialog(
+            transient_for=parent,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text=title
+        )
+        dialog.format_secondary_text(message)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, 
+                          "Restart Daemon", Gtk.ResponseType.YES)
+        response = dialog.run()
+        dialog.destroy()
+        return response == Gtk.ResponseType.YES
 
 
 class AuthCallbackHandler(http.server.SimpleHTTPRequestHandler):
@@ -73,6 +137,9 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         
         self.client: Optional[OneDriveClient] = None
         self.remote_files: List[Dict[str, Any]] = []
+        
+        # Thread pool for async operations
+        self.executor = ThreadPoolExecutor(max_workers=2)
         
         # Menu items that need to be updated based on auth state
         self.login_menu_item: Optional[Gtk.MenuItem] = None
@@ -664,8 +731,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
     def _logout(self) -> None:
         """Log out and clear authentication."""
         # Remove token file
-        if self.config.token_path.exists():
-            self.config.token_path.unlink()
+        self.config.token_path.unlink(missing_ok=True)
         
         # Clear client
         self.client = None
@@ -680,16 +746,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         self._update_auth_menu_state()
         
         # Show info dialog
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.OK,
-            text="Logged Out",
-        )
-        dialog.format_secondary_text("You have been logged out successfully.")
-        dialog.run()
-        dialog.destroy()
+        DialogHelper.show_info(self, "Logged Out", "You have been logged out successfully.")
     
     def _on_settings_clicked(self, widget) -> None:
         """Handle settings button click."""
@@ -834,21 +891,14 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             return
         
         # Confirm deletion
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.WARNING,
-            buttons=Gtk.ButtonsType.YES_NO,
-            text="Remove Local Copy?",
-        )
-        dialog.format_secondary_text(
+        confirmed = DialogHelper.show_confirm(
+            self,
+            "Remove Local Copy?",
             f"Remove local copy of {len(paths)} selected file(s)?\n\n"
             "Files will remain on OneDrive and can be downloaded again later."
         )
-        response = dialog.run()
-        dialog.destroy()
         
-        if response != Gtk.ResponseType.YES:
+        if not confirmed:
             return
         
         for path in paths:
@@ -880,22 +930,18 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             try:
                 local_path = self.config.sync_directory / rel_path
                 
-                if local_path.exists():
-                    local_path.unlink()
-                    logger.info(f"Removed local copy: {rel_path}")
-                    
-                    # Update sync state to mark as not downloaded
-                    state = self.config.load_state()
-                    if 'files' in state and rel_path in state['files']:
-                        state['files'][rel_path]['downloaded'] = False
-                        self.config.save_state(state)
-                    
-                    GLib.idle_add(self._update_status, f"Removed local copy of {file_name}")
-                    GLib.idle_add(self._load_remote_files)  # Refresh
-                else:
-                    logger.warning(f"File not found locally: {rel_path}")
-                    GLib.idle_add(self._update_status, "File not found locally")
-                    
+                local_path.unlink(missing_ok=True)
+                logger.info(f"Removed local copy: {rel_path}")
+                
+                # Update sync state to mark as not downloaded
+                state = self.config.load_state()
+                if 'files' in state and rel_path in state['files']:
+                    state['files'][rel_path]['downloaded'] = False
+                    self.config.save_state(state)
+                
+                GLib.idle_add(self._update_status, f"Removed local copy of {file_name}")
+                GLib.idle_add(self._load_remote_files)  # Refresh
+                
             except Exception as e:
                 logger.error(f"Failed to remove local copy of {file_name}: {e}")
                 GLib.idle_add(self._show_error, f"Failed to remove: {e}")
@@ -1067,7 +1113,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             logger.info(f"Found {pending_count} files pending upload")
     
     def _get_file_icon(self, filename: str) -> str:
-        """Get icon name for file type.
+        """Get icon name for file type using GIO content type detection.
         
         Args:
             filename: File name
@@ -1075,76 +1121,12 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         Returns:
             GTK icon name
         """
-        # Get file extension
-        ext = filename.lower().split('.')[-1] if '.' in filename else ''
-        
-        # Map extensions to GTK icon names
-        icon_map = {
-            # Documents
-            'pdf': 'x-office-document',
-            'doc': 'x-office-document',
-            'docx': 'x-office-document',
-            'odt': 'x-office-document',
-            'txt': 'text-x-generic',
-            'rtf': 'text-x-generic',
-            
-            # Spreadsheets
-            'xls': 'x-office-spreadsheet',
-            'xlsx': 'x-office-spreadsheet',
-            'ods': 'x-office-spreadsheet',
-            'csv': 'x-office-spreadsheet',
-            
-            # Presentations
-            'ppt': 'x-office-presentation',
-            'pptx': 'x-office-presentation',
-            'odp': 'x-office-presentation',
-            
-            # Images
-            'jpg': 'image-x-generic',
-            'jpeg': 'image-x-generic',
-            'png': 'image-x-generic',
-            'gif': 'image-x-generic',
-            'bmp': 'image-x-generic',
-            'svg': 'image-x-generic',
-            'ico': 'image-x-generic',
-            
-            # Video
-            'mp4': 'video-x-generic',
-            'avi': 'video-x-generic',
-            'mkv': 'video-x-generic',
-            'mov': 'video-x-generic',
-            'wmv': 'video-x-generic',
-            'flv': 'video-x-generic',
-            
-            # Audio
-            'mp3': 'audio-x-generic',
-            'wav': 'audio-x-generic',
-            'flac': 'audio-x-generic',
-            'ogg': 'audio-x-generic',
-            'm4a': 'audio-x-generic',
-            
-            # Archives
-            'zip': 'package-x-generic',
-            'rar': 'package-x-generic',
-            'tar': 'package-x-generic',
-            'gz': 'package-x-generic',
-            '7z': 'package-x-generic',
-            
-            # Code
-            'py': 'text-x-script',
-            'js': 'text-x-script',
-            'java': 'text-x-script',
-            'c': 'text-x-script',
-            'cpp': 'text-x-script',
-            'h': 'text-x-script',
-            'sh': 'text-x-script',
-            'html': 'text-html',
-            'css': 'text-x-script',
-            'xml': 'text-html',
-            'json': 'text-x-script',
-        }
-        
-        return icon_map.get(ext, 'text-x-generic')
+        content_type, _ = Gio.content_type_guess(filename, None)
+        if content_type:
+            icon = Gio.content_type_get_icon(content_type)
+            names = icon.get_names() if hasattr(icon, 'get_names') else []
+            return names[0] if names else 'text-x-generic'
+        return 'text-x-generic'
     
     def _download_file(self, file_id: str, file_name: str) -> None:
         """Download file from OneDrive.
@@ -1443,6 +1425,9 @@ class SettingsDialog(Gtk.Dialog):
         self.config = config
         self.set_default_size(400, 200)
         
+        # Track if we're initializing to avoid triggering change handlers
+        self._initializing = True
+        
         box = self.get_content_area()
         box.set_spacing(10)
         
@@ -1484,6 +1469,7 @@ class SettingsDialog(Gtk.Dialog):
         
         # Create combo box for log levels using ComboBoxText
         self.log_level_combo = Gtk.ComboBoxText()
+        self.log_level_combo.set_entry_text_column(0)
         log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
         for level in log_levels:
             self.log_level_combo.append_text(level)
@@ -1495,15 +1481,22 @@ class SettingsDialog(Gtk.Dialog):
                 self.log_level_combo.set_active(i)
                 break
         
+        # Connect to changed signal AFTER setting initial value to avoid triggering on init
         self.log_level_combo.connect("changed", self._on_log_level_changed)
         hbox3.pack_start(self.log_level_combo, False, False, 0)
         
         box.add(hbox3)
         
+        # Mark initialization as complete
+        self._initializing = False
+        
         self.show_all()
     
     def _on_sync_dir_changed(self, widget) -> None:
         """Handle sync directory change."""
+        if self._initializing:
+            return
+            
         path = widget.get_filename()
         if path:
             old_dir = self.config.sync_directory
@@ -1536,6 +1529,9 @@ class SettingsDialog(Gtk.Dialog):
     
     def _on_interval_changed(self, widget) -> None:
         """Handle sync interval change."""
+        if self._initializing:
+            return
+            
         value = int(widget.get_value())
         self.config.set('sync_interval', value)
         logger.info(f"Sync interval changed to {value} seconds")
@@ -1563,6 +1559,9 @@ class SettingsDialog(Gtk.Dialog):
     
     def _on_log_level_changed(self, widget) -> None:
         """Handle log level change."""
+        if self._initializing:
+            return
+            
         log_level = widget.get_active_text()
         if log_level:
             # Save to config

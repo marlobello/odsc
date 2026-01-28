@@ -12,3 +12,6 @@ dbus-python>=1.3.2
 
 # Configuration and utilities
 python-dateutil>=2.8.2
+
+# Desktop trash integration
+send2trash>=1.8.0

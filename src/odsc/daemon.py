@@ -4,6 +4,7 @@
 import logging
 import os
 import time
+import signal
 import threading
 from pathlib import Path
 from typing import Dict, Any, Set, Optional
@@ -11,6 +12,7 @@ from datetime import datetime
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
+from send2trash import send2trash
 
 from .config import Config
 from .onedrive_client import OneDriveClient
@@ -87,6 +89,18 @@ class SyncDaemon:
         
         # Load sync state
         self.state = self.config.load_state()
+        
+        # Setup signal handlers
+        self._setup_signal_handlers()
+    
+    def _setup_signal_handlers(self) -> None:
+        """Setup signal handlers for graceful shutdown."""
+        def signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, shutting down gracefully...")
+            self.stop()
+        
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
     
     def initialize(self) -> bool:
         """Initialize OneDrive client and authentication.
@@ -287,7 +301,8 @@ class SyncDaemon:
                     
                 elif action == 'recycle':
                     logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
-                    self._move_to_recycle_bin(local_info['path'], rel_path)
+                    local_path = self.config.sync_directory / rel_path
+                    self._move_to_recycle_bin(local_path, rel_path)
                     # Remove from state
                     if rel_path in self.state['files']:
                         del self.state['files'][rel_path]
@@ -313,6 +328,38 @@ class SyncDaemon:
         self._cleanup_recycle_bin()
         
         logger.info("Periodic sync completed")
+    
+    def _move_to_recycle_bin(self, local_path: Path, rel_path: str) -> None:
+        """Move file to system recycle bin/trash.
+        
+        Args:
+            local_path: Full path to the local file
+            rel_path: Relative path for logging
+        """
+        try:
+            if local_path.exists():
+                send2trash(str(local_path))
+                logger.info(f"Moved to recycle bin: {rel_path}")
+            else:
+                logger.warning(f"File not found for recycling: {rel_path}")
+        except Exception as e:
+            logger.error(f"Failed to move {rel_path} to recycle bin: {e}")
+            # Fallback to permanent deletion if trash fails
+            try:
+                local_path.unlink(missing_ok=True)
+                logger.warning(f"Permanently deleted (trash failed): {rel_path}")
+            except Exception as e2:
+                logger.error(f"Failed to delete {rel_path}: {e2}")
+    
+    def _cleanup_recycle_bin(self) -> None:
+        """Clean up old recycle bin entries.
+        
+        Note: send2trash handles cleanup automatically through the OS.
+        This method is kept for future custom cleanup logic if needed.
+        """
+        # OS handles recycle bin cleanup automatically
+        # Could add custom logic here for tracking recycled files
+        pass
     
     def _determine_sync_action(self, rel_path: str, local_info: Optional[Dict], 
                                remote_info: Optional[Dict], state_entry: Dict) -> str:

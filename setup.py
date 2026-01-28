@@ -34,6 +34,7 @@ setup(
         "PyGObject>=3.42.0",
         "dbus-python>=1.3.2",
         "python-dateutil>=2.8.2",
+        "send2trash>=1.8.0",
     ],
     entry_points={
         "console_scripts": [
