@@ -144,14 +144,23 @@ def cmd_config(args):
             
             key, value = item.split('=', 1)
             
-            # Type conversion
-            if key == 'sync_interval':
-                value = int(value)
-            elif key == 'sync_directory':
-                value = str(Path(value).expanduser())
-            
-            config.set(key, value)
-            print(f"✓ Set {key} = {value}")
+            # Type conversion for known keys
+            try:
+                if key == 'sync_interval':
+                    value = int(value)
+                elif key == 'sync_directory':
+                    value = str(Path(value).expanduser())
+                
+                # Set with validation
+                config.set(key, value)
+                print(f"✓ Set {key} = {value}")
+                
+            except ValueError as e:
+                print(f"✗ Error setting {key}: {e}")
+                continue
+            except Exception as e:
+                print(f"✗ Unexpected error setting {key}: {e}")
+                continue
         
         return 0
     

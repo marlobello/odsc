@@ -75,14 +75,116 @@ class Config:
         return self._config.get(key, default)
     
     def set(self, key: str, value: Any) -> None:
-        """Set configuration value.
+        """Set configuration value with validation.
         
         Args:
             key: Configuration key
             value: Configuration value
+            
+        Raises:
+            ValueError: If value is invalid for the given key
         """
-        self._config[key] = value
+        # Validate value based on key
+        validated_value = self._validate_config_value(key, value)
+        self._config[key] = validated_value
         self.save()
+    
+    def _validate_config_value(self, key: str, value: Any) -> Any:
+        """Validate and sanitize configuration value.
+        
+        Args:
+            key: Configuration key
+            value: Value to validate
+            
+        Returns:
+            Validated/sanitized value
+            
+        Raises:
+            ValueError: If value is invalid
+        """
+        if key == 'sync_interval':
+            # Must be integer between 60 seconds (1 min) and 86400 seconds (1 day)
+            try:
+                interval = int(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"sync_interval must be an integer, got: {value}")
+            
+            if interval < 60:
+                raise ValueError(f"sync_interval must be at least 60 seconds (1 minute), got: {interval}")
+            if interval > 86400:
+                raise ValueError(f"sync_interval must be at most 86400 seconds (1 day), got: {interval}")
+            
+            return interval
+        
+        elif key == 'sync_directory':
+            # Must be valid path, parent must exist or be creatable
+            try:
+                path = Path(value).expanduser().resolve()
+            except Exception as e:
+                raise ValueError(f"Invalid path for sync_directory: {e}")
+            
+            # Check parent directory exists
+            if not path.parent.exists():
+                raise ValueError(f"Parent directory does not exist: {path.parent}")
+            
+            # Ensure we have write permissions to parent
+            if not path.exists():
+                # Check parent is writable
+                if not path.parent.is_dir():
+                    raise ValueError(f"Parent is not a directory: {path.parent}")
+                # Try to verify write access (not foolproof but catches common issues)
+                import os
+                if not os.access(path.parent, os.W_OK):
+                    raise ValueError(f"No write permission to parent directory: {path.parent}")
+            else:
+                # Directory exists, check it's actually a directory
+                if not path.is_dir():
+                    raise ValueError(f"sync_directory exists but is not a directory: {path}")
+            
+            return str(path)
+        
+        elif key == 'log_level':
+            # Must be valid logging level
+            valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+            level = str(value).upper()
+            
+            if level not in valid_levels:
+                raise ValueError(f"log_level must be one of {valid_levels}, got: {value}")
+            
+            return level
+        
+        elif key == 'client_id':
+            # Basic format validation - should be UUID-like or empty
+            client_id = str(value).strip()
+            
+            if client_id:
+                # Check it looks like a UUID (loose validation)
+                if len(client_id) < 32 or len(client_id) > 40:
+                    raise ValueError(f"client_id appears invalid (wrong length): {client_id}")
+                
+                # Check for dangerous characters
+                import re
+                if not re.match(r'^[a-f0-9\-]+$', client_id, re.IGNORECASE):
+                    raise ValueError(f"client_id contains invalid characters: {client_id}")
+            
+            return client_id
+        
+        elif key == 'auto_start':
+            # Must be boolean
+            if isinstance(value, bool):
+                return value
+            
+            # Try to convert string to boolean
+            if isinstance(value, str):
+                if value.lower() in ('true', '1', 'yes', 'on'):
+                    return True
+                elif value.lower() in ('false', '0', 'no', 'off'):
+                    return False
+            
+            raise ValueError(f"auto_start must be boolean, got: {value}")
+        
+        # For unknown keys, just store as-is (allow extensibility)
+        return value
     
     @property
     def sync_directory(self) -> Path:

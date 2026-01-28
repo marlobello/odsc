@@ -1560,7 +1560,7 @@ class SettingsDialog(Gtk.Dialog):
         label2.set_halign(Gtk.Align.START)
         hbox2.pack_start(label2, False, False, 0)
         
-        adjustment = Gtk.Adjustment(value=config.sync_interval, lower=60, upper=3600, step_increment=60)
+        adjustment = Gtk.Adjustment(value=config.sync_interval, lower=60, upper=86400, step_increment=60)
         self.interval_spin = Gtk.SpinButton(adjustment=adjustment)
         self.interval_spin.connect("value-changed", self._on_interval_changed)
         hbox2.pack_start(self.interval_spin, False, False, 0)
@@ -1609,9 +1609,48 @@ class SettingsDialog(Gtk.Dialog):
             old_dir = self.config.sync_directory
             new_dir = Path(path)
             
-            # Save to config
-            self.config.sync_directory = new_dir
-            logger.info(f"Sync directory changed from {old_dir} to {new_dir}")
+            try:
+                # Validate and save to config
+                self.config.set('sync_directory', str(new_dir))
+                logger.info(f"Sync directory changed from {old_dir} to {new_dir}")
+                
+                # Show confirmation with daemon restart option
+                dialog = Gtk.MessageDialog(
+                    transient_for=self.get_transient_for(),
+                    flags=0,
+                    message_type=Gtk.MessageType.INFO,
+                    buttons=Gtk.ButtonsType.NONE,
+                    text="Sync Directory Changed",
+                )
+                dialog.format_secondary_text(
+                    f"Sync directory changed to:\n{new_dir}\n\n"
+                    "The daemon needs to be restarted for this change to take effect."
+                )
+                dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+                dialog.add_button("Restart Daemon", Gtk.ResponseType.APPLY)
+                
+                response = dialog.run()
+                dialog.destroy()
+                
+                if response == Gtk.ResponseType.APPLY:
+                    self.parent_window._restart_daemon()
+                    
+            except ValueError as e:
+                # Validation failed
+                DialogHelper.show_error(self, f"Invalid sync directory: {e}")
+                # Revert to old value
+                self.sync_dir_button.set_filename(str(old_dir))
+    
+    def _on_interval_changed(self, widget) -> None:
+        """Handle sync interval change."""
+        if self._initializing:
+            return
+            
+        value = int(widget.get_value())
+        
+        try:
+            self.config.set('sync_interval', value)
+            logger.info(f"Sync interval changed to {value} seconds")
             
             # Show confirmation with daemon restart option
             dialog = Gtk.MessageDialog(
@@ -1619,10 +1658,10 @@ class SettingsDialog(Gtk.Dialog):
                 flags=0,
                 message_type=Gtk.MessageType.INFO,
                 buttons=Gtk.ButtonsType.NONE,
-                text="Sync Directory Changed",
+                text="Sync Interval Changed",
             )
             dialog.format_secondary_text(
-                f"Sync directory changed to:\n{new_dir}\n\n"
+                f"Sync interval changed to {value} seconds.\n\n"
                 "The daemon needs to be restarted for this change to take effect."
             )
             dialog.add_button("Close", Gtk.ResponseType.CLOSE)
@@ -1633,36 +1672,12 @@ class SettingsDialog(Gtk.Dialog):
             
             if response == Gtk.ResponseType.APPLY:
                 self.parent_window._restart_daemon()
-    
-    def _on_interval_changed(self, widget) -> None:
-        """Handle sync interval change."""
-        if self._initializing:
-            return
-            
-        value = int(widget.get_value())
-        self.config.set('sync_interval', value)
-        logger.info(f"Sync interval changed to {value} seconds")
-        
-        # Show confirmation with daemon restart option
-        dialog = Gtk.MessageDialog(
-            transient_for=self.get_transient_for(),
-            flags=0,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.NONE,
-            text="Sync Interval Changed",
-        )
-        dialog.format_secondary_text(
-            f"Sync interval changed to {value} seconds.\n\n"
-            "The daemon needs to be restarted for this change to take effect."
-        )
-        dialog.add_button("Close", Gtk.ResponseType.CLOSE)
-        dialog.add_button("Restart Daemon", Gtk.ResponseType.APPLY)
-        
-        response = dialog.run()
-        dialog.destroy()
-        
-        if response == Gtk.ResponseType.APPLY:
-            self.parent_window._restart_daemon()
+                
+        except ValueError as e:
+            # Validation failed
+            DialogHelper.show_error(self, f"Invalid sync interval: {e}")
+            # Revert to old value
+            self.interval_spin.set_value(self.config.sync_interval)
     
     def _on_log_level_changed(self, widget) -> None:
         """Handle log level change."""
@@ -1671,27 +1686,39 @@ class SettingsDialog(Gtk.Dialog):
             
         log_level = widget.get_active_text()
         if log_level:
-            # Save to config
-            self.config.set('log_level', log_level)
-            
-            # Apply the log level immediately
-            setup_logging(level=log_level, log_file=self.config.log_path)
-            logger.info(f"Log level changed to {log_level} via GUI")
-            
-            # Show confirmation dialog
-            dialog = Gtk.MessageDialog(
-                transient_for=self.get_transient_for(),
-                flags=0,
-                message_type=Gtk.MessageType.INFO,
-                buttons=Gtk.ButtonsType.OK,
-                text="Log Level Changed",
-            )
-            dialog.format_secondary_text(
-                f"Log level changed to {log_level}.\n\n"
-                "The new log level is now active."
-            )
-            dialog.run()
-            dialog.destroy()
+            try:
+                # Validate and save to config
+                self.config.set('log_level', log_level)
+                
+                # Apply the log level immediately
+                setup_logging(level=log_level, log_file=self.config.log_path)
+                logger.info(f"Log level changed to {log_level} via GUI")
+                
+                # Show confirmation dialog
+                dialog = Gtk.MessageDialog(
+                    transient_for=self.get_transient_for(),
+                    flags=0,
+                    message_type=Gtk.MessageType.INFO,
+                    buttons=Gtk.ButtonsType.OK,
+                    text="Log Level Changed",
+                )
+                dialog.format_secondary_text(
+                    f"Log level changed to {log_level}.\n\n"
+                    "The new log level is now active."
+                )
+                dialog.run()
+                dialog.destroy()
+                
+            except ValueError as e:
+                # Validation failed
+                DialogHelper.show_error(self, f"Invalid log level: {e}")
+                # Revert to old value
+                old_level = self.config.log_level
+                log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+                for i, level in enumerate(log_levels):
+                    if level == old_level:
+                        self.log_level_combo.set_active(i)
+                        break
 
 
 class OneDriveApplication(Gtk.Application):
