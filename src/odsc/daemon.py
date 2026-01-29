@@ -401,6 +401,11 @@ class SyncDaemon:
         # Process changes
         remote_files = {}
         for item in changes:
+            # Skip the drive root itself
+            if 'root' in item or item.get('name') == 'root':
+                logger.debug(f"Skipping drive root object")
+                continue
+            
             if item.get('deleted'):
                 self._process_remote_deletion(item)
             elif 'folder' in item:
