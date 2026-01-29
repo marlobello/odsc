@@ -420,9 +420,8 @@ class SyncDaemon:
                     local_path = self.config.sync_directory / path
                     if local_path.exists():
                         self._move_to_recycle_bin(local_path, path)
-                    del self.state['files'][path]
                 
-                del self.state['file_cache'][path]
+                self._remove_from_cache(path)
                 break
     
     def _process_remote_folder(self, item: Dict[str, Any], sync_dir: Path) -> None:
@@ -548,27 +547,53 @@ class SyncDaemon:
         elif action == 'skip':
             logger.debug(f"Skipping (up to date): {rel_path}")
     
+    def _update_file_state(self, rel_path: str, mtime: float, size: int, 
+                          metadata: Optional[Dict] = None, error: Optional[str] = None) -> None:
+        """Update file state in sync tracking.
+        
+        Args:
+            rel_path: Relative file path
+            mtime: File modification time
+            size: File size
+            metadata: OneDrive metadata (eTag, lastModifiedDateTime) if successful
+            error: Error message if sync failed
+        """
+        state_entry = {
+            'mtime': mtime,
+            'size': size,
+            'downloaded': True,
+        }
+        
+        if error:
+            state_entry['upload_error'] = error
+        else:
+            state_entry['eTag'] = metadata.get('eTag', '') if metadata else ''
+            state_entry['remote_modified'] = metadata.get('lastModifiedDateTime', '') if metadata else ''
+            state_entry['upload_error'] = None
+        
+        self.state['files'][rel_path] = state_entry
+    
+    def _remove_from_cache(self, path: str) -> None:
+        """Remove item from cache and file state.
+        
+        Args:
+            path: Relative path to remove
+        """
+        if path in self.state.get('files', {}):
+            del self.state['files'][path]
+        if path in self.state.get('file_cache', {}):
+            del self.state['file_cache'][path]
+            logger.debug(f"Removed {path} from cache")
+    
     def _upload_file(self, rel_path: str, local_info: Dict) -> None:
         """Upload a local file to OneDrive."""
         logger.info(f"Uploading: {rel_path}")
         try:
             metadata = self.client.upload_file(local_info['path'], rel_path)
-            self.state['files'][rel_path] = {
-                'mtime': local_info['mtime'],
-                'size': local_info['size'],
-                'eTag': metadata.get('eTag', ''),
-                'remote_modified': metadata.get('lastModifiedDateTime', ''),
-                'downloaded': True,
-                'upload_error': None,
-            }
+            self._update_file_state(rel_path, local_info['mtime'], local_info['size'], metadata)
         except Exception as upload_err:
             logger.error(f"Upload failed for {rel_path}: {upload_err}")
-            self.state['files'][rel_path] = {
-                'mtime': local_info['mtime'],
-                'size': local_info['size'],
-                'downloaded': True,
-                'upload_error': str(upload_err),
-            }
+            self._update_file_state(rel_path, local_info['mtime'], local_info['size'], error=str(upload_err))
     
     def _download_file(self, rel_path: str, sync_dir: Path, remote_info: Dict) -> None:
         """Download a file from OneDrive."""
@@ -576,14 +601,7 @@ class SyncDaemon:
         try:
             local_path = self._validate_sync_path(rel_path, sync_dir)
             metadata = self.client.download_file(remote_info['id'], local_path)
-            self.state['files'][rel_path] = {
-                'mtime': local_path.stat().st_mtime,
-                'size': remote_info['size'],
-                'eTag': remote_info['eTag'],
-                'remote_modified': remote_info['lastModifiedDateTime'],
-                'downloaded': True,
-                'upload_error': None,
-            }
+            self._update_file_state(rel_path, local_path.stat().st_mtime, remote_info['size'], remote_info)
         except Exception as download_err:
             logger.error(f"Download failed for {rel_path}: {download_err}")
     
@@ -592,12 +610,7 @@ class SyncDaemon:
         logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
         local_path = self._validate_sync_path(rel_path, sync_dir)
         self._move_to_recycle_bin(local_path, rel_path)
-        
-        if rel_path in self.state['files']:
-            del self.state['files'][rel_path]
-        if rel_path in self.state['file_cache']:
-            del self.state['file_cache'][rel_path]
-            logger.debug(f"Removed {rel_path} from cache")
+        self._remove_from_cache(rel_path)
     
     def _handle_file_conflict(self, rel_path: str, sync_dir: Path, remote_info: Dict) -> None:
         """Handle a file conflict by keeping both versions."""
@@ -630,9 +643,7 @@ class SyncDaemon:
                 self._move_to_recycle_bin(local_path, folder_path)
                 
                 del local_folders[folder_path]
-                if folder_path in self.state['file_cache']:
-                    del self.state['file_cache'][folder_path]
-                    logger.debug(f"Removed {folder_path} from cache")
+                self._remove_from_cache(folder_path)
             except Exception as e:
                 logger.error(f"Failed to remove local folder {folder_path}: {e}")
     
@@ -820,15 +831,7 @@ class SyncDaemon:
             metadata = self.client.upload_file(path, str(rel_path))
             
             # Update state - clear any previous error
-            self.state['files'][str(rel_path)] = {
-                'mtime': path.stat().st_mtime,
-                'size': path.stat().st_size,
-                'eTag': metadata.get('eTag', ''),
-                'remote_modified': metadata.get('lastModifiedDateTime', ''),
-                'synced': True,
-                'downloaded': True,
-                'upload_error': None,  # Clear error on success
-            }
+            self._update_file_state(str(rel_path), path.stat().st_mtime, path.stat().st_size, metadata)
             self.config.save_state(self.state)
             
             logger.info(f"Synced file: {rel_path}")
@@ -841,13 +844,7 @@ class SyncDaemon:
             if 'files' not in self.state:
                 self.state['files'] = {}
             
-            self.state['files'][str(rel_path)] = {
-                'mtime': path.stat().st_mtime,
-                'size': path.stat().st_size,
-                'synced': False,
-                'downloaded': True,
-                'upload_error': error_msg,
-            }
+            self._update_file_state(str(rel_path), path.stat().st_mtime, path.stat().st_size, error=error_msg)
             self.config.save_state(self.state)
 
 
