@@ -434,8 +434,9 @@ class SyncDaemon:
         
         logger.info(f"Processed {len(remote_files)} remote files from delta")
         
-        # Scan local directory
+        # Scan local directory for files
         local_files = {}
+        local_folders = {}
         for path in sync_dir.rglob('*'):
             # Skip hidden files and directories
             if any(part.startswith('.') for part in path.parts):
@@ -452,8 +453,17 @@ class SyncDaemon:
                 except (OSError, PermissionError) as e:
                     logger.warning(f"Cannot access {path}: {e}")
                     continue
+            elif path.is_dir():
+                try:
+                    rel_path = str(path.relative_to(sync_dir))
+                    local_folders[rel_path] = {
+                        'path': path,
+                    }
+                except (OSError, PermissionError) as e:
+                    logger.warning(f"Cannot access {path}: {e}")
+                    continue
         
-        logger.info(f"Found {len(local_files)} local files")
+        logger.info(f"Found {len(local_files)} local files and {len(local_folders)} local folders")
         
         # Get all remote files from cache (not just changed ones)
         all_remote_files = {}
@@ -537,6 +547,43 @@ class SyncDaemon:
                     
             except Exception as e:
                 logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
+        
+        # Sync folders
+        # Get all remote folders from cache
+        all_remote_folders = {}
+        for path, cached in self.state['file_cache'].items():
+            if cached.get('is_folder', False):
+                all_remote_folders[path] = cached
+        
+        logger.info(f"Total remote folders in cache: {len(all_remote_folders)}")
+        
+        # Process folders - upload new local folders to OneDrive
+        for folder_path, folder_info in local_folders.items():
+            if folder_path not in all_remote_folders:
+                # New local folder not on OneDrive
+                try:
+                    logger.info(f"Creating folder on OneDrive: {folder_path}")
+                    metadata = self.client.create_folder(folder_path)
+                    # Update cache
+                    self.state['file_cache'][folder_path] = {
+                        'id': metadata['id'],
+                        'is_folder': True,
+                    }
+                    logger.info(f"Folder created on OneDrive: {folder_path}")
+                except Exception as e:
+                    logger.error(f"Failed to create folder {folder_path} on OneDrive: {e}")
+        
+        # Process folders - create missing local folders from OneDrive
+        for folder_path, folder_info in all_remote_folders.items():
+            if folder_path not in local_folders:
+                # Remote folder not present locally
+                try:
+                    local_path = self._validate_sync_path(folder_path, sync_dir)
+                    logger.info(f"Creating local folder: {folder_path}")
+                    local_path.mkdir(parents=True, exist_ok=True)
+                    logger.info(f"Local folder created: {folder_path}")
+                except Exception as e:
+                    logger.error(f"Failed to create local folder {folder_path}: {e}")
         
         # Update sync time
         self.state['last_sync'] = datetime.now().isoformat()

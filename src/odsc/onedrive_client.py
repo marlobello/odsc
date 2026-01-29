@@ -483,6 +483,54 @@ class OneDriveClient:
         
         raise Exception(f"Upload failed after {max_retries} attempts: {last_error}")
     
+    def create_folder(self, folder_path: str) -> Dict[str, Any]:
+        """Create a folder on OneDrive.
+        
+        Args:
+            folder_path: Relative path of folder to create (e.g., "Documents/NewFolder")
+            
+        Returns:
+            Folder metadata including ID
+        """
+        folder_path = folder_path.lstrip('/')
+        
+        # Split into parent and folder name
+        path_parts = Path(folder_path).parts
+        if len(path_parts) == 1:
+            # Root level folder
+            parent_endpoint = "/me/drive/root/children"
+            folder_name = path_parts[0]
+        else:
+            # Nested folder
+            parent_path = str(Path(*path_parts[:-1]))
+            parent_endpoint = f"/me/drive/root:/{parent_path}:/children"
+            folder_name = path_parts[-1]
+        
+        # Create folder
+        data = {
+            "name": folder_name,
+            "folder": {},
+            "@microsoft.graph.conflictBehavior": "fail"
+        }
+        
+        try:
+            response = self._api_request('POST', parent_endpoint, json=data)
+            metadata = response.json()
+            logger.info(f"Created folder: {folder_path}")
+            return metadata
+        except Exception as e:
+            # Check if folder already exists
+            if "already exists" in str(e).lower() or "name already exists" in str(e).lower():
+                logger.debug(f"Folder already exists: {folder_path}")
+                # Try to get existing folder metadata
+                try:
+                    endpoint = f"/me/drive/root:/{folder_path}"
+                    response = self._api_request('GET', endpoint)
+                    return response.json()
+                except:
+                    pass
+            raise
+    
     def delete_file(self, file_id: str) -> None:
         """Delete file from OneDrive.
         
