@@ -588,6 +588,19 @@ class SyncDaemon:
                 except Exception as e:
                     logger.error(f"Failed to create local folder {folder_path}: {e}")
         
+        # Process folders - handle deletions
+        for folder_path in local_folders:
+            if folder_path not in all_remote_folders:
+                # Local folder exists but not on OneDrive
+                # This means it was deleted from OneDrive - delete locally
+                try:
+                    local_path = self._validate_sync_path(folder_path, sync_dir)
+                    logger.info(f"Folder deleted from OneDrive, removing locally: {folder_path}")
+                    # Move to recycle bin instead of permanent delete
+                    self._move_to_recycle_bin(local_path, folder_path)
+                except Exception as e:
+                    logger.error(f"Failed to remove local folder {folder_path}: {e}")
+        
         # Update sync time
         self.state['last_sync'] = datetime.now().isoformat()
         self.config.save_state(self.state)
