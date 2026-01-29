@@ -1356,12 +1356,27 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         # Track which files exist on OneDrive
         remote_files_set = set()
         
-        # Sort: folders first, then by path
-        sorted_items = sorted(files, key=lambda x: (
-            'folder' not in x,  # Folders first
-            x.get('parentReference', {}).get('path', ''),
-            x.get('name', '')
-        ))
+        # Sort: folders first, then by path (ensuring parents before children)
+        def sort_key(x):
+            is_folder = 'folder' in x or x.get('is_folder', False)
+            # Get parent path for sorting
+            if '_cache_path' in x:
+                # For daemon items, derive from cache path
+                cache_path = x['_cache_path']
+                parent = str(Path(cache_path).parent) if '/' in cache_path else ''
+                sort_path = cache_path
+            else:
+                # For OneDrive items, use parentReference
+                parent = x.get('parentReference', {}).get('path', '')
+                sort_path = parent + '/' + x.get('name', '')
+            
+            return (
+                not is_folder,  # Folders first
+                parent,  # Group by parent
+                sort_path  # Then by full path
+            )
+        
+        sorted_items = sorted(files, key=sort_key)
         
         for item in sorted_items:
             name = item.get('name', 'Unknown')
@@ -1376,11 +1391,21 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 if parent_path:
                     parent_path = self._sanitize_onedrive_path(parent_path)
                 
-                # Build full path
-                if parent_path:
-                    full_path = str(Path(parent_path) / name)
+                # For daemon-created items, derive parent from cache path
+                if not parent_path and '_cache_path' in item:
+                    cache_path = item['_cache_path']
+                    if '/' in cache_path:
+                        # Has parent (e.g., "Documents/newFolder" -> parent is "Documents")
+                        parent_path = str(Path(cache_path).parent)
+                        if parent_path == '.':
+                            parent_path = ''
+                    full_path = cache_path
                 else:
-                    full_path = name
+                    # Build full path from parent + name
+                    if parent_path:
+                        full_path = str(Path(parent_path) / name)
+                    else:
+                        full_path = name
                 
                 # Validate path is safe
                 validated_path = self._validate_sync_path(full_path, sync_dir)
