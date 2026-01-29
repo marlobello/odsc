@@ -1198,7 +1198,15 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                     self.config.save_state(state)
                     
                     # Build file list from cache
-                    files = list(file_cache.values())
+                    # For items without 'name', derive it from the cache key (path)
+                    files = []
+                    for path, item in file_cache.items():
+                        if 'name' not in item and path:
+                            # Derive name from path for daemon-created folders
+                            item = dict(item)  # Make a copy
+                            item['name'] = Path(path).name if path != 'root' else 'OneDrive'
+                            item['_cache_path'] = path
+                        files.append(item)
                     logger.info(f"Delta refresh complete: {len(changes)} changes, {len(files)} total items")
                 else:
                     # Initial load - fetch all files
@@ -1357,7 +1365,8 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         
         for item in sorted_items:
             name = item.get('name', 'Unknown')
-            is_folder = 'folder' in item
+            # Check both OneDrive format ('folder' key) and daemon format ('is_folder' flag)
+            is_folder = 'folder' in item or item.get('is_folder', False)
             item_id = item.get('id', '')
             
             try:

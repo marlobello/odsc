@@ -385,11 +385,9 @@ class SyncDaemon:
                     # Validate path
                     self._validate_sync_path(full_path, sync_dir)
                     
-                    # Update cache
-                    self.state['file_cache'][full_path] = {
-                        'id': item['id'],
-                        'is_folder': True,
-                    }
+                    # Store full folder metadata (not just id and is_folder flag)
+                    # This ensures GUI can display folder names properly
+                    self.state['file_cache'][full_path] = item
                 except (SecurityError, Exception) as e:
                     logger.warning(f"Skipping unsafe folder: {e}")
                 continue
@@ -465,10 +463,11 @@ class SyncDaemon:
         
         logger.info(f"Found {len(local_files)} local files and {len(local_folders)} local folders")
         
-        # Get all remote files from cache (not just changed ones)
+        # Get all remote files from cache (exclude folders)
         all_remote_files = {}
         for path, cached in self.state['file_cache'].items():
-            if not cached.get('is_folder', False):
+            # Exclude both OneDrive folders and daemon-created folders
+            if not ('folder' in cached or cached.get('is_folder', False)):
                 all_remote_files[path] = cached
         
         logger.info(f"Total remote files in cache: {len(all_remote_files)}")
@@ -552,7 +551,8 @@ class SyncDaemon:
         # Get all remote folders from cache
         all_remote_folders = {}
         for path, cached in self.state['file_cache'].items():
-            if cached.get('is_folder', False):
+            # Check both OneDrive format ('folder' key) and daemon format ('is_folder' flag)
+            if 'folder' in cached or cached.get('is_folder', False):
                 all_remote_folders[path] = cached
         
         logger.info(f"Total remote folders in cache: {len(all_remote_folders)}")
@@ -564,11 +564,9 @@ class SyncDaemon:
                 try:
                     logger.info(f"Creating folder on OneDrive: {folder_path}")
                     metadata = self.client.create_folder(folder_path)
-                    # Update cache
-                    self.state['file_cache'][folder_path] = {
-                        'id': metadata['id'],
-                        'is_folder': True,
-                    }
+                    # Store full metadata (not just id and is_folder)
+                    # This ensures GUI can display folder names properly
+                    self.state['file_cache'][folder_path] = metadata
                     logger.info(f"Folder created on OneDrive: {folder_path}")
                 except Exception as e:
                     logger.error(f"Failed to create folder {folder_path} on OneDrive: {e}")
