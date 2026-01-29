@@ -1196,12 +1196,19 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 if not is_local and file_id:
                     files_to_download.append((file_id, file_name))
         
-        # Download all collected files
-        for file_id, file_name in files_to_download:
-            self._download_file(file_id, file_name)
+        if not files_to_download:
+            return
         
-        # Update button states after action
-        GLib.timeout_add(500, self._update_button_states)
+        # Download files in single background thread to avoid spawning too many threads
+        if len(files_to_download) > 10:
+            self._download_files_batch(files_to_download)
+        else:
+            # For small batches, use existing individual download threads
+            for file_id, file_name in files_to_download:
+                self._download_file(file_id, file_name)
+            
+            # Update button states after action
+            GLib.timeout_add(500, self._update_button_states)
     
     def _on_remove_local_clicked(self, widget) -> None:
         """Handle remove local copy button click."""
@@ -1877,6 +1884,82 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 GLib.idle_add(self._update_status, f"Download failed: {file_name}")
         
         thread = threading.Thread(target=download_in_thread, daemon=True)
+        thread.start()
+    
+    def _download_files_batch(self, files: list) -> None:
+        """Download multiple files in a single background thread.
+        
+        Args:
+            files: List of tuples (file_id, file_name)
+        """
+        total = len(files)
+        self._update_status(f"Downloading {total} files...")
+        
+        def download_batch():
+            success_count = 0
+            error_count = 0
+            
+            for i, (file_id, file_name) in enumerate(files, 1):
+                try:
+                    # Update progress
+                    GLib.idle_add(self._update_status, f"Downloading {i}/{total}: {file_name}")
+                    
+                    # Get full file info to determine path
+                    file_info = self.client.get_file_metadata(file_id)
+                    parent_path = file_info.get('parentReference', {}).get('path', '')
+                    if parent_path:
+                        parent_path = self._sanitize_onedrive_path(parent_path)
+                    
+                    rel_path = str(Path(parent_path) / file_name) if parent_path else file_name
+                    
+                    # Validate path before download
+                    local_path = self._validate_sync_path(rel_path, self.config.sync_directory)
+                    
+                    # Download file with retry logic
+                    metadata = self.client.download_file(file_id, local_path)
+                    
+                    # Update sync state to mark as downloaded
+                    state = self.config.load_state()
+                    if 'files' not in state:
+                        state['files'] = {}
+                    
+                    state['files'][rel_path] = {
+                        'mtime': local_path.stat().st_mtime,
+                        'size': file_info.get('size', 0),
+                        'eTag': metadata.get('eTag', ''),
+                        'remote_modified': metadata.get('lastModifiedDateTime', ''),
+                        'downloaded': True,
+                        'upload_error': None,
+                    }
+                    self.config.save_state(state)
+                    
+                    logger.info(f"Downloaded and marked for sync: {rel_path}")
+                    success_count += 1
+                    
+                except Exception as e:
+                    error_msg = f"Failed to download {file_name}: {str(e)}"
+                    logger.error(error_msg, exc_info=True)
+                    error_count += 1
+            
+            # Show final status
+            if error_count > 0:
+                GLib.idle_add(
+                    self._update_status,
+                    f"Downloaded {success_count}/{total} files ({error_count} failed)"
+                )
+                GLib.idle_add(
+                    self._show_error,
+                    "Download Incomplete",
+                    f"Downloaded {success_count} files successfully.\n{error_count} files failed."
+                )
+            else:
+                GLib.idle_add(self._update_status, f"Downloaded all {total} files successfully")
+            
+            # Refresh file list
+            GLib.idle_add(self._load_remote_files)
+            GLib.idle_add(self._update_button_states)
+        
+        thread = threading.Thread(target=download_batch, daemon=True)
         thread.start()
     
     def _format_size(self, size: int) -> str:
