@@ -146,6 +146,29 @@ journalctl --user -u odsc -f
 systemctl --user restart odsc
 ```
 
+### Local state corrupted or out of sync? (Advanced)
+⚠️ **WARNING: This will delete all local files and re-download from OneDrive!**
+
+```bash
+# See what would be deleted (safe)
+odsc-reset-local --dry-run
+
+# Actually reset local state (requires --force)
+odsc-reset-local --force
+
+# Reset without auto-restarting daemon
+odsc-reset-local --force --no-restart
+```
+
+This utility:
+- Stops the daemon
+- Deletes ALL local files and folders
+- Clears sync state and cache
+- Keeps authentication token
+- Re-syncs everything from OneDrive (treated as authoritative)
+
+Use this when local state becomes corrupted or you want a fresh start.
+
 ### Authentication failed?
 1. Ensure port 8080 is available
 2. Check internet connection
@@ -163,10 +186,11 @@ pip3 uninstall odsc -y
 ## Command Line Tools
 
 ```bash
-odsc-gui           # Launch GUI application
-odsc-daemon        # Run sync daemon (if not using systemd)
-odsc auth          # Authenticate from command line
-odsc status        # View sync status
+odsc-gui            # Launch GUI application
+odsc-daemon         # Run sync daemon (if not using systemd)
+odsc auth           # Authenticate from command line
+odsc status         # View sync status
+odsc-reset-local    # Reset local state (ADVANCED - see Troubleshooting)
 ```
 
 ## Systemd Service Commands

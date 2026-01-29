@@ -44,6 +44,7 @@ setup(
             "odsc=odsc.cli:main",
             "odsc-daemon=odsc.daemon:main",
             "odsc-gui=odsc.gui:main",
+            "odsc-reset-local=odsc.reset_local:main",
         ],
     },
 )
