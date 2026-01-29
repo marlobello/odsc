@@ -108,8 +108,9 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 **Key Features**:
 - **Authentication**: OAuth flow with local callback server (port 8080)
 - **File Browser**: TreeView showing all OneDrive files with status
-- **"Keep Local Copy"**: Download files and enable automatic sync
-- **"Remove Local Copy"**: Delete local file, keep on OneDrive, disable sync
+- **"Keep Local Copy"**: Download files/folders and enable automatic sync
+- **"Remove Local Copy"**: Delete local file/folder, keep on OneDrive, disable sync
+- **Folder Support**: Both "Keep Local Copy" and "Remove Local Copy" work recursively on folders
 - **Status Indicators**: Checkbox shows which files have local copies
 - **Settings**: Configure sync directory, interval, and logging
 - **Refresh**: Manual update of file list from OneDrive
@@ -312,9 +313,8 @@ Future consideration: Plugin system for:
 5. **Multi-account**: Support multiple OneDrive accounts
 6. **Sharing**: Manage OneDrive sharing from GUI
 7. **Offline Mode**: Queue operations when offline
-8. **Delta Sync**: Use OneDrive delta API for efficiency
-9. **Folder Support**: "Keep Local Copy" for entire folders
-10. **Progress Bars**: Real-time upload/download progress in GUI
+8. **Delta Sync**: Already implemented! Uses OneDrive delta API for efficiency
+9. **Progress Bars**: Real-time upload/download progress in GUI
 
 ## Known Limitations
 
@@ -323,8 +323,7 @@ Future consideration: Plugin system for:
 3. **No Local Encryption**: Files not encrypted at rest locally (relies on OneDrive encryption)
 4. **Linux Only**: Designed for Ubuntu/GNOME (requires GTK 3.0)
 5. **No Versioning UI**: Can't access OneDrive file version history from GUI
-6. **No Folder Operations**: "Keep Local Copy" works per-file, not for entire folders
-7. **No Bandwidth Throttling**: Uploads/downloads use full available bandwidth
+6. **No Bandwidth Throttling**: Uploads/downloads use full available bandwidth
 
 ## Troubleshooting
 

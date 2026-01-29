@@ -29,12 +29,13 @@ def test_config_save_load():
         
         # Create and save config
         config1 = Config(config_dir)
-        config1.set('client_id', 'test-client-id')
+        # Use a valid UUID-like client ID for testing
+        config1.set('client_id', 'df3a0308-c302-4962-b115-08bd59526bc5')
         config1.set('sync_interval', 600)
         
         # Load config in new instance
         config2 = Config(config_dir)
-        assert config2.get('client_id') == 'test-client-id'
+        assert config2.get('client_id') == 'df3a0308-c302-4962-b115-08bd59526bc5'
         assert config2.sync_interval == 600
 
 

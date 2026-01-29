@@ -17,13 +17,9 @@ from send2trash import send2trash
 from .config import Config
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
+from .path_utils import sanitize_onedrive_path, validate_sync_path, SecurityError
 
 logger = logging.getLogger(__name__)
-
-
-class SecurityError(Exception):
-    """Raised when a security violation is detected."""
-    pass
 
 
 class SyncEventHandler(FileSystemEventHandler):
@@ -198,87 +194,6 @@ class SyncDaemon:
             # Wait for sync interval
             time.sleep(self.config.sync_interval)
     
-    def _sanitize_onedrive_path(self, raw_path: str) -> str:
-        """Safely extract relative path from OneDrive API path.
-        
-        Args:
-            raw_path: Raw path from OneDrive API
-            
-        Returns:
-            Sanitized relative path safe for local file system
-            
-        Raises:
-            SecurityError: If path contains dangerous components
-        """
-        # Remove known OneDrive prefixes
-        path = raw_path.replace('/drive/root:', '').replace('/drive/root', '')
-        
-        # Strip leading/trailing slashes to make it a relative path
-        path = path.strip('/').strip('\\')
-        
-        # If empty after stripping, return empty
-        if not path:
-            return ''
-        
-        # Use pathlib to properly handle path components
-        parts = Path(path).parts
-        
-        # Filter out dangerous components
-        safe_parts = []
-        for part in parts:
-            # Block path traversal and special names
-            # Note: '/' shouldn't appear here anymore due to strip above,
-            # but keep it for safety
-            if part in ('..', '.', '/', '\\', ''):
-                logger.warning(f"Blocked dangerous path component: {part}")
-                continue
-            # Block absolute paths (shouldn't happen after strip, but double-check)
-            if part.startswith('/') or part.startswith('\\'):
-                logger.warning(f"Blocked absolute path component: {part}")
-                continue
-            safe_parts.append(part)
-        
-        if not safe_parts:
-            return ''
-        
-        return str(Path(*safe_parts))
-    
-    def _validate_sync_path(self, rel_path: str, sync_dir: Path) -> Path:
-        """Validate path is within sync directory and not a symlink.
-        
-        Args:
-            rel_path: Relative path to validate
-            sync_dir: Sync directory base path
-            
-        Returns:
-            Validated absolute path
-            
-        Raises:
-            SecurityError: If path validation fails
-        """
-        # Convert to absolute path
-        full_path = (sync_dir / rel_path).resolve()
-        sync_dir_resolved = sync_dir.resolve()
-        
-        # Check it's within sync directory
-        try:
-            full_path.relative_to(sync_dir_resolved)
-        except ValueError:
-            raise SecurityError(f"Path traversal detected: {rel_path}")
-        
-        # Check for symlinks in the path (don't follow them)
-        # Start from full_path and work backwards to sync_dir
-        check_path = full_path
-        while check_path != sync_dir_resolved:
-            if check_path.is_symlink():
-                raise SecurityError(f"Symlink detected in path: {rel_path}")
-            if check_path == check_path.parent:
-                # Reached root without finding sync_dir - should not happen
-                break
-            check_path = check_path.parent
-        
-        return full_path
-    
     def _extract_item_path(self, item: Dict[str, Any]) -> str:
         """Extract and sanitize full path from OneDrive item.
         
@@ -292,7 +207,7 @@ class SyncDaemon:
         name = item.get('name', '')
         
         if parent_path:
-            safe_parent = self._sanitize_onedrive_path(parent_path)
+            safe_parent = sanitize_onedrive_path(parent_path)
             return str(Path(safe_parent) / name) if safe_parent else name
         return name
     
@@ -379,7 +294,6 @@ class SyncDaemon:
             Dictionary of remote files, or None if error occurred
         """
         delta_token = self.state.get('delta_token')
-        delta_token = self.state.get('delta_token')
         
         # Fetch changes using delta query
         logger.info("Fetching changes from OneDrive using delta query...")
@@ -442,7 +356,7 @@ class SyncDaemon:
                 return
             
             full_path = self._extract_item_path(item)
-            self._validate_sync_path(full_path, sync_dir)
+            validate_sync_path(full_path, sync_dir)
             self.state['file_cache'][full_path] = item
         except (SecurityError, Exception) as e:
             logger.warning(f"Skipping unsafe folder: {e}")
@@ -455,7 +369,7 @@ class SyncDaemon:
         """
         try:
             full_path = self._extract_item_path(item)
-            self._validate_sync_path(full_path, sync_dir)
+            validate_sync_path(full_path, sync_dir)
             
             metadata = {
                 'id': item['id'],
@@ -613,7 +527,7 @@ class SyncDaemon:
         """Download a file from OneDrive."""
         logger.info(f"Downloading updated version: {rel_path}")
         try:
-            local_path = self._validate_sync_path(rel_path, sync_dir)
+            local_path = validate_sync_path(rel_path, sync_dir)
             metadata = self.client.download_file(remote_info['id'], local_path)
             self._update_file_state(rel_path, local_path.stat().st_mtime, remote_info['size'], remote_info)
         except Exception as download_err:
@@ -622,7 +536,7 @@ class SyncDaemon:
     def _recycle_remote_deleted_file(self, rel_path: str, sync_dir: Path) -> None:
         """Handle a file that was deleted remotely."""
         logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
-        local_path = self._validate_sync_path(rel_path, sync_dir)
+        local_path = validate_sync_path(rel_path, sync_dir)
         self._move_to_recycle_bin(local_path, rel_path)
         self._remove_from_cache(rel_path)
     
@@ -630,7 +544,7 @@ class SyncDaemon:
         """Handle a file conflict by keeping both versions."""
         logger.warning(f"CONFLICT detected for {rel_path} - keeping both versions")
         conflict_rel = f"{rel_path}.conflict"
-        conflict_path = self._validate_sync_path(conflict_rel, sync_dir)
+        conflict_path = validate_sync_path(conflict_rel, sync_dir)
         metadata = self.client.download_file(remote_info['id'], conflict_path)
         logger.info(f"Saved remote version as: {conflict_path}")
     
@@ -666,7 +580,7 @@ class SyncDaemon:
         
         for folder_path in folders_to_delete:
             try:
-                local_path = self._validate_sync_path(folder_path, sync_dir)
+                local_path = validate_sync_path(folder_path, sync_dir)
                 logger.info(f"Folder deleted from OneDrive, removing locally: {folder_path}")
                 self._move_to_recycle_bin(local_path, folder_path)
                 
@@ -693,7 +607,7 @@ class SyncDaemon:
         for folder_path in all_remote_folders:
             if folder_path not in local_folders:
                 try:
-                    local_path = self._validate_sync_path(folder_path, sync_dir)
+                    local_path = validate_sync_path(folder_path, sync_dir)
                     logger.info(f"Creating local folder: {folder_path}")
                     local_path.mkdir(parents=True, exist_ok=True)
                     logger.info(f"Local folder created: {folder_path}")

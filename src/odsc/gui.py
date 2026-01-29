@@ -20,13 +20,9 @@ from gi.repository import Gtk, GLib, Gdk, Gio
 from .config import Config
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
+from .path_utils import sanitize_onedrive_path, validate_sync_path, cleanup_empty_parent_dirs, SecurityError
 
 logger = logging.getLogger(__name__)
-
-
-class SecurityError(Exception):
-    """Raised when a security violation is detected."""
-    pass
 
 
 class DialogHelper:
@@ -1338,10 +1334,14 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         def remove_in_thread():
             try:
                 # Validate path before removal
-                local_path = self._validate_sync_path(rel_path, self.config.sync_directory)
+                local_path = validate_sync_path(rel_path, self.config.sync_directory)
                 
+                # Delete the file
                 local_path.unlink(missing_ok=True)
                 logger.info(f"Removed local copy: {rel_path}")
+                
+                # Clean up empty parent directories
+                cleanup_empty_parent_dirs(local_path, self.config.sync_directory)
                 
                 # Update sync state to mark as not downloaded
                 state = self.config.load_state()
@@ -1401,7 +1401,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                                 name = item.get('name', '')
                                 
                                 if parent_path:
-                                    safe_parent = self._sanitize_onedrive_path(parent_path)
+                                    safe_parent = sanitize_onedrive_path(parent_path)
                                     full_path = str(Path(safe_parent) / name) if safe_parent else name
                                 else:
                                     full_path = name
@@ -1442,7 +1442,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                                 name = item.get('name', '')
                                 
                                 if parent_path:
-                                    safe_parent = self._sanitize_onedrive_path(parent_path)
+                                    safe_parent = sanitize_onedrive_path(parent_path)
                                     full_path = str(Path(safe_parent) / name) if safe_parent else name
                                 else:
                                     full_path = name
@@ -1469,87 +1469,6 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         
         thread = threading.Thread(target=load_in_thread, daemon=True)
         thread.start()
-    
-    def _sanitize_onedrive_path(self, raw_path: str) -> str:
-        """Safely extract relative path from OneDrive API path.
-        
-        Args:
-            raw_path: Raw path from OneDrive API
-            
-        Returns:
-            Sanitized relative path safe for local file system
-            
-        Raises:
-            SecurityError: If path contains dangerous components
-        """
-        # Remove known OneDrive prefixes
-        path = raw_path.replace('/drive/root:', '').replace('/drive/root', '')
-        
-        # Strip leading/trailing slashes to make it a relative path
-        path = path.strip('/').strip('\\')
-        
-        # If empty after stripping, return empty
-        if not path:
-            return ''
-        
-        # Use pathlib to properly handle path components
-        parts = Path(path).parts
-        
-        # Filter out dangerous components
-        safe_parts = []
-        for part in parts:
-            # Block path traversal and special names
-            # Note: '/' shouldn't appear here anymore due to strip above,
-            # but keep it for safety
-            if part in ('..', '.', '/', '\\', ''):
-                logger.warning(f"Blocked dangerous path component: {part}")
-                continue
-            # Block absolute paths (shouldn't happen after strip, but double-check)
-            if part.startswith('/') or part.startswith('\\'):
-                logger.warning(f"Blocked absolute path component: {part}")
-                continue
-            safe_parts.append(part)
-        
-        if not safe_parts:
-            return ''
-        
-        return str(Path(*safe_parts))
-    
-    def _validate_sync_path(self, rel_path: str, sync_dir: Path) -> Path:
-        """Validate path is within sync directory and not a symlink.
-        
-        Args:
-            rel_path: Relative path to validate
-            sync_dir: Sync directory base path
-            
-        Returns:
-            Validated absolute path
-            
-        Raises:
-            SecurityError: If path validation fails
-        """
-        # Convert to absolute path
-        full_path = (sync_dir / rel_path).resolve()
-        sync_dir_resolved = sync_dir.resolve()
-        
-        # Check it's within sync directory
-        try:
-            full_path.relative_to(sync_dir_resolved)
-        except ValueError:
-            raise SecurityError(f"Path traversal detected: {rel_path}")
-        
-        # Check for symlinks in the path (don't follow them)
-        # Start from full_path and work backwards to sync_dir
-        check_path = full_path
-        while check_path != sync_dir_resolved:
-            if check_path.is_symlink():
-                raise SecurityError(f"Symlink detected in path: {rel_path}")
-            if check_path == check_path.parent:
-                # Reached root without finding sync_dir - should not happen
-                break
-            check_path = check_path.parent
-        
-        return full_path
     
     def _update_file_list(self, files: List[Dict[str, Any]]) -> None:
         """Update file list view with folder hierarchy.
@@ -1612,7 +1531,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 parent_ref = item.get('parentReference', {})
                 parent_path = parent_ref.get('path', '')
                 if parent_path:
-                    parent_path = self._sanitize_onedrive_path(parent_path)
+                    parent_path = sanitize_onedrive_path(parent_path)
                 
                 # For daemon-created items, derive parent from cache path
                 if not parent_path and '_cache_path' in item:
@@ -1631,7 +1550,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                         full_path = name
                 
                 # Validate path is safe
-                validated_path = self._validate_sync_path(full_path, sync_dir)
+                validated_path = validate_sync_path(full_path, sync_dir)
                 
                 remote_files_set.add(full_path)
             
@@ -1849,12 +1768,12 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 file_info = self.client.get_file_metadata(file_id)
                 parent_path = file_info.get('parentReference', {}).get('path', '')
                 if parent_path:
-                    parent_path = self._sanitize_onedrive_path(parent_path)
+                    parent_path = sanitize_onedrive_path(parent_path)
                 
                 rel_path = str(Path(parent_path) / file_name) if parent_path else file_name
                 
                 # Validate path before download
-                local_path = self._validate_sync_path(rel_path, self.config.sync_directory)
+                local_path = validate_sync_path(rel_path, self.config.sync_directory)
                 
                 # Download file with retry logic
                 metadata = self.client.download_file(file_id, local_path)
@@ -1899,6 +1818,11 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             success_count = 0
             error_count = 0
             
+            # Load state ONCE before loop
+            state = self.config.load_state()
+            if 'files' not in state:
+                state['files'] = {}
+            
             for i, (file_id, file_name) in enumerate(files, 1):
                 try:
                     # Update progress
@@ -1908,21 +1832,17 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                     file_info = self.client.get_file_metadata(file_id)
                     parent_path = file_info.get('parentReference', {}).get('path', '')
                     if parent_path:
-                        parent_path = self._sanitize_onedrive_path(parent_path)
+                        parent_path = sanitize_onedrive_path(parent_path)
                     
                     rel_path = str(Path(parent_path) / file_name) if parent_path else file_name
                     
                     # Validate path before download
-                    local_path = self._validate_sync_path(rel_path, self.config.sync_directory)
+                    local_path = validate_sync_path(rel_path, self.config.sync_directory)
                     
                     # Download file with retry logic
                     metadata = self.client.download_file(file_id, local_path)
                     
-                    # Update sync state to mark as downloaded
-                    state = self.config.load_state()
-                    if 'files' not in state:
-                        state['files'] = {}
-                    
+                    # Update sync state in memory (not saved yet)
                     state['files'][rel_path] = {
                         'mtime': local_path.stat().st_mtime,
                         'size': file_info.get('size', 0),
@@ -1931,7 +1851,6 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                         'downloaded': True,
                         'upload_error': None,
                     }
-                    self.config.save_state(state)
                     
                     logger.info(f"Downloaded and marked for sync: {rel_path}")
                     success_count += 1
@@ -1940,6 +1859,13 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                     error_msg = f"Failed to download {file_name}: {str(e)}"
                     logger.error(error_msg, exc_info=True)
                     error_count += 1
+            
+            # Save state ONCE after all downloads
+            try:
+                self.config.save_state(state)
+                logger.info(f"Batch download complete: {success_count} succeeded, {error_count} failed")
+            except Exception as e:
+                logger.error(f"Failed to save state after batch download: {e}")
             
             # Show final status
             if error_count > 0:
