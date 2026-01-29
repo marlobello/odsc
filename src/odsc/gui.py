@@ -329,8 +329,8 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 # Some files in folder are synced
                 cell.set_property('icon-name', 'emblem-synchronizing')
             elif folder_status == 'none':
-                # No files in folder are synced
-                cell.set_property('icon-name', 'folder')
+                # No files in folder are synced - cloud-only
+                cell.set_property('icon-name', 'weather-overcast')
             else:
                 # Empty folder or no files
                 cell.set_property('icon-name', None)
