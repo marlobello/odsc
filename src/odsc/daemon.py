@@ -346,15 +346,16 @@ class SyncDaemon:
         # Scan local filesystem
         local_files, local_folders = self._scan_local_filesystem(sync_dir)
         
-        # Get all remote files from cache
-        all_remote_files = self._get_all_remote_files()
-        
-        # Sync files
-        self._sync_files(sync_dir, local_files, remote_files, all_remote_files)
-        
-        # Sync folders
+        # Get all remote folders from cache
         all_remote_folders = self._get_all_remote_folders()
+        
+        # IMPORTANT: Sync folders FIRST before files
+        # This ensures parent folders exist before uploading files
         self._sync_folders(sync_dir, local_folders, all_remote_folders)
+        
+        # Now sync files (folders already exist)
+        all_remote_files = self._get_all_remote_files()
+        self._sync_files(sync_dir, local_files, remote_files, all_remote_files)
         
         # Finalize sync
         self._finalize_sync()
