@@ -1204,7 +1204,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                         if 'name' not in item and path:
                             # Derive name from path for daemon-created folders
                             item = dict(item)  # Make a copy
-                            item['name'] = Path(path).name if path != 'root' else 'OneDrive'
+                            item['name'] = Path(path).name
                             item['_cache_path'] = path
                         files.append(item)
                     logger.info(f"Delta refresh complete: {len(changes)} changes, {len(files)} total items")
