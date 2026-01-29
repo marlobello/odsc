@@ -86,9 +86,11 @@ echo "✓ Sync directory created at $HOME/OneDrive"
 echo ""
 echo "Installing application icon..."
 mkdir -p "$HOME/.local/share/icons/hicolor/scalable/apps"
+mkdir -p "$HOME/.local/share/icons/hicolor/128x128/apps"
 cp desktop/odsc.svg "$HOME/.local/share/icons/hicolor/scalable/apps/"
+cp desktop/odsc.png "$HOME/.local/share/icons/hicolor/128x128/apps/"
 gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
-echo "✓ Application icon installed"
+echo "✓ Application icon installed (SVG + PNG)"
 
 # Install systemd service
 echo ""
@@ -131,7 +133,11 @@ if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
     # Use application ID name for proper GNOME integration
     cp desktop/odsc.desktop "$HOME/.local/share/applications/com.github.odsc.desktop"
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    # Clear icon cache to ensure fresh icon loads
+    rm -rf "$HOME/.cache/icon-cache.kcache" 2>/dev/null || true
     echo "✓ Desktop entry installed"
+    echo ""
+    echo "Note: You may need to log out and back in for the icon to appear in the launcher."
 else
     echo "Skipped desktop entry installation"
 fi
