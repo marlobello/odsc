@@ -2261,17 +2261,19 @@ class SettingsDialog(Gtk.Dialog):
                 # Validate and save to config
                 self.config.set('log_level', log_level)
                 
-                # Apply the log level immediately
+                # Apply the log level immediately to GUI
                 setup_logging(level=log_level, log_file=self.config.log_path)
                 logger.info(f"Log level changed to {log_level} via GUI")
                 
-                # Show confirmation dialog
-                DialogHelper.show_info(
+                # Show confirmation with daemon restart option
+                if DialogHelper.show_restart_prompt(
                     self.get_transient_for(),
                     "Log Level Changed",
                     f"Log level changed to {log_level}.\n\n"
-                    "The new log level is now active."
-                )
+                    "The GUI is now using the new log level.\n"
+                    "The daemon needs to be restarted to apply the change."
+                ):
+                    self.parent_window._restart_daemon()
                 
             except ValueError as e:
                 # Validation failed

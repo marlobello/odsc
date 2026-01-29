@@ -64,7 +64,7 @@ def setup_logging(level: Optional[str] = None, log_file: Optional[Path] = None) 
             backupCount=5,
             encoding='utf-8'
         )
-        file_handler.setLevel(logging.DEBUG)  # Always log everything to file
+        file_handler.setLevel(numeric_level)  # Respect configured log level
         file_handler.setFormatter(detailed_formatter)
         root_logger.addHandler(file_handler)
     
