@@ -352,16 +352,19 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         
         Args:
             widget: TreeView widget
-            x: X coordinate
-            y: Y coordinate
+            x: X coordinate (in widget coordinates)
+            y: Y coordinate (in widget coordinates)
             keyboard_mode: Whether triggered by keyboard
             tooltip: Tooltip object
             
         Returns:
             True if tooltip should be shown, False otherwise
         """
+        # Convert widget coordinates to bin_window coordinates for get_path_at_pos
+        bin_x, bin_y = widget.convert_widget_to_bin_window_coords(x, y)
+        
         # Get the path at the cursor position
-        result = widget.get_path_at_pos(x, y)
+        result = widget.get_path_at_pos(bin_x, bin_y)
         if not result:
             return False
         
