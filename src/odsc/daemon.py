@@ -431,7 +431,8 @@ class SyncDaemon:
     def _process_remote_folder(self, item: Dict[str, Any], sync_dir: Path) -> None:
         """Process a folder from OneDrive delta."""
         try:
-            if 'root' in item:
+            # Skip the drive root itself
+            if 'root' in item or item.get('name') == 'root':
                 logger.debug("Skipping drive root object")
                 return
             
@@ -516,6 +517,10 @@ class SyncDaemon:
         """Get all remote folders from cache."""
         all_remote_folders = {}
         for path, cached in self.state['file_cache'].items():
+            # Skip the drive root itself
+            if 'root' in cached or path == 'root':
+                continue
+            
             if 'folder' in cached or cached.get('is_folder', False):
                 all_remote_folders[path] = cached
         
