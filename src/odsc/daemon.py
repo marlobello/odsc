@@ -376,6 +376,11 @@ class SyncDaemon:
                     parent_path = item.get('parentReference', {}).get('path', '')
                     name = item.get('name', '')
                     
+                    # Skip special 'root' folder (OneDrive system folder)
+                    if name == 'root' and not parent_path:
+                        logger.debug("Skipping special 'root' system folder")
+                        continue
+                    
                     if parent_path:
                         safe_parent = self._sanitize_onedrive_path(parent_path)
                         full_path = str(Path(safe_parent) / name) if safe_parent else name
