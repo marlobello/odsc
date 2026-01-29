@@ -562,6 +562,26 @@ class SyncDaemon:
         
         logger.info(f"Total remote folders in cache: {len(all_remote_folders)}")
         
+        # Process folders - handle deletions FIRST (before uploads)
+        folders_to_delete = []
+        for folder_path in local_folders:
+            if folder_path not in all_remote_folders:
+                # Local folder exists but not on OneDrive
+                # This means it was deleted from OneDrive - delete locally
+                folders_to_delete.append(folder_path)
+        
+        # Delete folders and remove from local_folders dict
+        for folder_path in folders_to_delete:
+            try:
+                local_path = self._validate_sync_path(folder_path, sync_dir)
+                logger.info(f"Folder deleted from OneDrive, removing locally: {folder_path}")
+                # Move to recycle bin instead of permanent delete
+                self._move_to_recycle_bin(local_path, folder_path)
+                # Remove from local_folders so we don't try to upload it
+                del local_folders[folder_path]
+            except Exception as e:
+                logger.error(f"Failed to remove local folder {folder_path}: {e}")
+        
         # Process folders - upload new local folders to OneDrive
         for folder_path, folder_info in local_folders.items():
             if folder_path not in all_remote_folders:
@@ -587,19 +607,6 @@ class SyncDaemon:
                     logger.info(f"Local folder created: {folder_path}")
                 except Exception as e:
                     logger.error(f"Failed to create local folder {folder_path}: {e}")
-        
-        # Process folders - handle deletions
-        for folder_path in local_folders:
-            if folder_path not in all_remote_folders:
-                # Local folder exists but not on OneDrive
-                # This means it was deleted from OneDrive - delete locally
-                try:
-                    local_path = self._validate_sync_path(folder_path, sync_dir)
-                    logger.info(f"Folder deleted from OneDrive, removing locally: {folder_path}")
-                    # Move to recycle bin instead of permanent delete
-                    self._move_to_recycle_bin(local_path, folder_path)
-                except Exception as e:
-                    logger.error(f"Failed to remove local folder {folder_path}: {e}")
         
         # Update sync time
         self.state['last_sync'] = datetime.now().isoformat()
