@@ -633,8 +633,22 @@ class SyncDaemon:
     
     def _delete_folders_removed_from_remote(self, sync_dir: Path, local_folders: Dict, 
                                            all_remote_folders: Dict) -> None:
-        """Delete local folders that were removed from OneDrive."""
-        folders_to_delete = [fp for fp in local_folders if fp not in all_remote_folders]
+        """Delete local folders that were removed from OneDrive.
+        
+        Only deletes folders that:
+        1. Exist locally
+        2. Were previously synced (exist in cache)
+        3. No longer exist on OneDrive (deleted remotely)
+        """
+        folders_to_delete = []
+        
+        for folder_path in local_folders:
+            # Check if folder was previously in cache (was synced before)
+            if folder_path in self.state.get('file_cache', {}):
+                # Folder was synced before, check if it still exists on OneDrive
+                if folder_path not in all_remote_folders:
+                    # Folder was deleted from OneDrive
+                    folders_to_delete.append(folder_path)
         
         for folder_path in folders_to_delete:
             try:
