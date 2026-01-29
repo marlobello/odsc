@@ -279,6 +279,23 @@ class SyncDaemon:
         
         return full_path
     
+    def _extract_item_path(self, item: Dict[str, Any]) -> str:
+        """Extract and sanitize full path from OneDrive item.
+        
+        Args:
+            item: OneDrive item dictionary
+            
+        Returns:
+            Sanitized relative path
+        """
+        parent_path = item.get('parentReference', {}).get('path', '')
+        name = item.get('name', '')
+        
+        if parent_path:
+            safe_parent = self._sanitize_onedrive_path(parent_path)
+            return str(Path(safe_parent) / name) if safe_parent else name
+        return name
+    
     def _should_do_periodic_sync(self) -> bool:
         """Check if periodic sync should run.
         
@@ -378,16 +395,8 @@ class SyncDaemon:
                         logger.debug("Skipping drive root object")
                         continue
                     
-                    parent_path = item.get('parentReference', {}).get('path', '')
-                    name = item.get('name', '')
-                    
-                    if parent_path:
-                        safe_parent = self._sanitize_onedrive_path(parent_path)
-                        full_path = str(Path(safe_parent) / name) if safe_parent else name
-                    else:
-                        full_path = name
-                    
-                    # Validate path
+                    # Extract and validate path
+                    full_path = self._extract_item_path(item)
                     self._validate_sync_path(full_path, sync_dir)
                     
                     # Store full folder metadata (not just id and is_folder flag)
@@ -399,18 +408,8 @@ class SyncDaemon:
             
             # Process files
             try:
-                # Extract and sanitize path
-                parent_path = item.get('parentReference', {}).get('path', '')
-                name = item.get('name', '')
-                
-                # Sanitize OneDrive path
-                if parent_path:
-                    safe_parent = self._sanitize_onedrive_path(parent_path)
-                    full_path = str(Path(safe_parent) / name) if safe_parent else name
-                else:
-                    full_path = name
-                
-                # Validate it's within sync directory
+                # Extract and validate path
+                full_path = self._extract_item_path(item)
                 validated_path = self._validate_sync_path(full_path, sync_dir)
                 
                 # Update cache with latest metadata

@@ -435,7 +435,6 @@ class OneDriveClient:
                 last_error = e
                 if attempt < max_retries - 1:
                     logger.warning(f"Download attempt {attempt + 1} failed for {local_path}, retrying: {e}")
-                    import time
                     time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
                 else:
                     logger.error(f"Download failed after {max_retries} attempts for {local_path}: {e}")
@@ -476,7 +475,6 @@ class OneDriveClient:
                 last_error = e
                 if attempt < max_retries - 1:
                     logger.warning(f"Upload attempt {attempt + 1} failed for {local_path}, retrying: {e}")
-                    import time
                     time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
                 else:
                     logger.error(f"Upload failed after {max_retries} attempts for {local_path}: {e}")
@@ -527,8 +525,8 @@ class OneDriveClient:
                     endpoint = f"/me/drive/root:/{folder_path}"
                     response = self._api_request('GET', endpoint)
                     return response.json()
-                except:
-                    pass
+                except Exception as get_err:
+                    logger.warning(f"Could not get metadata for existing folder: {get_err}")
             raise
     
     def delete_file(self, file_id: str) -> None:
