@@ -455,12 +455,22 @@ class SyncDaemon:
         
         logger.info(f"Found {len(local_files)} local files")
         
+        # Get all remote files from cache (not just changed ones)
+        all_remote_files = {}
+        for path, cached in self.state['file_cache'].items():
+            if not cached.get('is_folder', False):
+                all_remote_files[path] = cached
+        
+        logger.info(f"Total remote files in cache: {len(all_remote_files)}")
+        
         # Process each file with robust conflict detection
-        all_paths = set(local_files.keys()) | set(remote_files.keys())
+        # Use cache for full remote file list, remote_files only for changed files
+        all_paths = set(local_files.keys()) | set(all_remote_files.keys())
         
         for rel_path in all_paths:
             local_info = local_files.get(rel_path)
-            remote_info = remote_files.get(rel_path)
+            # Check if file changed (in delta) or just exists (in cache)
+            remote_info = remote_files.get(rel_path) or all_remote_files.get(rel_path)
             state_entry = self.state['files'].get(rel_path, {})
             
             try:
