@@ -1099,7 +1099,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             self.remove_local_button.set_sensitive(False)
             return
         
-        # Count files by type (ignore folders)
+        # Count files by type (includes files in folders)
         has_remote_only = 0  # Files on OneDrive but not local
         has_local_copy = 0   # Files that exist locally
         
@@ -1109,35 +1109,65 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             is_folder = model.get_value(iter, 6)
             file_id = model.get_value(iter, 5)
             
-            # Skip folders
             if is_folder:
-                continue
-            
-            # Categorize file
-            if is_local:
-                # Has local copy (synced)
-                has_local_copy += 1
-            elif file_id:
-                # Has file_id and not local means it's remote-only
-                has_remote_only += 1
+                # For folders, check the files within (recursively)
+                folder_local, folder_remote = self._count_folder_files(model, iter)
+                has_local_copy += folder_local
+                has_remote_only += folder_remote
+            else:
+                # Single file - categorize it
+                if is_local:
+                    # Has local copy (synced)
+                    has_local_copy += 1
+                elif file_id:
+                    # Has file_id and not local means it's remote-only
+                    has_remote_only += 1
         
         # Logic:
-        # - All selected files are remote-only → Enable "Keep Local Copy"
-        # - All selected files have local copies → Enable "Remove Local Copy"
-        # - Mixed selection → Disable both buttons
+        # - Has any remote-only files → Enable "Keep Local Copy"
+        # - Has any local files → Enable "Remove Local Copy"
+        # Both buttons can be enabled if selection has both types
         
-        if has_remote_only > 0 and has_local_copy == 0:
-            # Only remote-only files selected
-            self.keep_local_button.set_sensitive(True)
-            self.remove_local_button.set_sensitive(False)
-        elif has_local_copy > 0 and has_remote_only == 0:
-            # Only synced files selected
-            self.keep_local_button.set_sensitive(False)
-            self.remove_local_button.set_sensitive(True)
-        else:
-            # Mixed or no valid files selected
-            self.keep_local_button.set_sensitive(False)
-            self.remove_local_button.set_sensitive(False)
+        self.keep_local_button.set_sensitive(has_remote_only > 0)
+        self.remove_local_button.set_sensitive(has_local_copy > 0)
+    
+    def _count_folder_files(self, model, folder_iter):
+        """Count local and remote-only files in a folder recursively.
+        
+        Args:
+            model: TreeModel
+            folder_iter: TreeIter for the folder
+            
+        Returns:
+            Tuple of (local_count, remote_only_count)
+        """
+        local_count = 0
+        remote_only_count = 0
+        
+        def count_files(parent_iter):
+            nonlocal local_count, remote_only_count
+            
+            child_iter = model.iter_children(parent_iter)
+            while child_iter:
+                is_folder = model.get_value(child_iter, 6)
+                
+                if is_folder:
+                    # Recursively count files in subfolder
+                    count_files(child_iter)
+                else:
+                    # Count this file
+                    is_local = model.get_value(child_iter, 4)
+                    file_id = model.get_value(child_iter, 5)
+                    
+                    if is_local:
+                        local_count += 1
+                    elif file_id:
+                        remote_only_count += 1
+                
+                child_iter = model.iter_next(child_iter)
+        
+        count_files(folder_iter)
+        return local_count, remote_only_count
     
     def _on_keep_local_clicked(self, widget) -> None:
         """Handle keep local copy button click."""
