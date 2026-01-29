@@ -514,43 +514,24 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 
                 if result.returncode == 0:
                     logger.info("Daemon restarted successfully")
-                    dialog = Gtk.MessageDialog(
-                        transient_for=self,
-                        flags=0,
-                        message_type=Gtk.MessageType.INFO,
-                        buttons=Gtk.ButtonsType.OK,
-                        text="Daemon Restarted",
-                    )
-                    dialog.format_secondary_text(
+                    DialogHelper.show_info(
+                        self,
+                        "Daemon Restarted",
                         "The ODSC daemon has been restarted successfully.\n"
                         "Your new settings are now active."
                     )
-                    dialog.run()
-                    dialog.destroy()
                 else:
                     logger.error(f"Failed to restart daemon: {result.stderr}")
                     self._show_error(f"Failed to restart daemon:\n{result.stderr}")
             else:
                 # Daemon is not running
                 logger.info("Daemon is not currently running")
-                dialog = Gtk.MessageDialog(
-                    transient_for=self,
-                    flags=0,
-                    message_type=Gtk.MessageType.INFO,
-                    buttons=Gtk.ButtonsType.NONE,
-                    text="Daemon Not Running",
-                )
-                dialog.format_secondary_text(
+                if DialogHelper.show_confirm(
+                    self,
+                    "Daemon Not Running",
                     "The ODSC daemon is not currently running.\n\n"
                     "Would you like to start it now?"
-                )
-                dialog.add_button("No", Gtk.ResponseType.NO)
-                dialog.add_button("Start Daemon", Gtk.ResponseType.YES)
-                
-                response = dialog.run()
-                dialog.destroy()
-                
-                if response == Gtk.ResponseType.YES:
+                ):
                     self._start_daemon()
                     
         except subprocess.TimeoutExpired:
@@ -583,19 +564,12 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             
             if result.returncode == 0:
                 logger.info("Daemon started successfully")
-                dialog = Gtk.MessageDialog(
-                    transient_for=self,
-                    flags=0,
-                    message_type=Gtk.MessageType.INFO,
-                    buttons=Gtk.ButtonsType.OK,
-                    text="Daemon Started",
-                )
-                dialog.format_secondary_text(
+                DialogHelper.show_info(
+                    self,
+                    "Daemon Started",
                     "The ODSC daemon has been started successfully.\n"
                     "Your settings are now active."
                 )
-                dialog.run()
-                dialog.destroy()
             else:
                 logger.error(f"Failed to start daemon: {result.stderr}")
                 self._show_error(f"Failed to start daemon:\n{result.stderr}")
@@ -953,14 +927,9 @@ class OneDriveGUI(Gtk.ApplicationWindow):
     def _on_license_clicked(self, widget) -> None:
         """Handle License menu item click."""
         # Show license dialog
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.CLOSE,
-            text="MIT License",
-        )
-        dialog.format_secondary_text(
+        DialogHelper.show_info(
+            self,
+            "MIT License",
             "Copyright (c) 2026 Marlo Bell\n\n"
             "Permission is hereby granted, free of charge, to any person obtaining a copy "
             "of this software and associated documentation files (the \"Software\"), to deal "
@@ -978,8 +947,6 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE "
             "SOFTWARE."
         )
-        dialog.run()
-        dialog.destroy()
     
     def _on_selection_changed(self, selection) -> None:
         """Handle selection changed event.
@@ -1626,16 +1593,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             message = title
             title = "Error"
             
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.ERROR,
-            buttons=Gtk.ButtonsType.OK,
-            text=title,
-        )
-        dialog.format_secondary_text(message)
-        dialog.run()
-        dialog.destroy()
+        DialogHelper.show_error(self, title, message)
 
 
 class AuthInfoDialog(Gtk.Dialog):
@@ -1930,24 +1888,12 @@ class SettingsDialog(Gtk.Dialog):
                 logger.info(f"Sync directory changed from {old_dir} to {new_dir}")
                 
                 # Show confirmation with daemon restart option
-                dialog = Gtk.MessageDialog(
-                    transient_for=self.get_transient_for(),
-                    flags=0,
-                    message_type=Gtk.MessageType.INFO,
-                    buttons=Gtk.ButtonsType.NONE,
-                    text="Sync Directory Changed",
-                )
-                dialog.format_secondary_text(
+                if DialogHelper.show_restart_prompt(
+                    self.get_transient_for(),
+                    "Sync Directory Changed",
                     f"Sync directory changed to:\n{new_dir}\n\n"
                     "The daemon needs to be restarted for this change to take effect."
-                )
-                dialog.add_button("Close", Gtk.ResponseType.CLOSE)
-                dialog.add_button("Restart Daemon", Gtk.ResponseType.APPLY)
-                
-                response = dialog.run()
-                dialog.destroy()
-                
-                if response == Gtk.ResponseType.APPLY:
+                ):
                     self.parent_window._restart_daemon()
                     
             except ValueError as e:
@@ -1968,24 +1914,13 @@ class SettingsDialog(Gtk.Dialog):
             logger.info(f"Sync interval changed to {value} seconds")
             
             # Show confirmation with daemon restart option
-            dialog = Gtk.MessageDialog(
-                transient_for=self.get_transient_for(),
-                flags=0,
-                message_type=Gtk.MessageType.INFO,
-                buttons=Gtk.ButtonsType.NONE,
-                text="Sync Interval Changed",
-            )
-            dialog.format_secondary_text(
+            # Show confirmation with daemon restart option
+            if DialogHelper.show_restart_prompt(
+                self.get_transient_for(),
+                "Sync Interval Changed",
                 f"Sync interval changed to {value} seconds.\n\n"
                 "The daemon needs to be restarted for this change to take effect."
-            )
-            dialog.add_button("Close", Gtk.ResponseType.CLOSE)
-            dialog.add_button("Restart Daemon", Gtk.ResponseType.APPLY)
-            
-            response = dialog.run()
-            dialog.destroy()
-            
-            if response == Gtk.ResponseType.APPLY:
+            ):
                 self.parent_window._restart_daemon()
                 
         except ValueError as e:
@@ -2010,19 +1945,12 @@ class SettingsDialog(Gtk.Dialog):
                 logger.info(f"Log level changed to {log_level} via GUI")
                 
                 # Show confirmation dialog
-                dialog = Gtk.MessageDialog(
-                    transient_for=self.get_transient_for(),
-                    flags=0,
-                    message_type=Gtk.MessageType.INFO,
-                    buttons=Gtk.ButtonsType.OK,
-                    text="Log Level Changed",
-                )
-                dialog.format_secondary_text(
+                DialogHelper.show_info(
+                    self.get_transient_for(),
+                    "Log Level Changed",
                     f"Log level changed to {log_level}.\n\n"
                     "The new log level is now active."
                 )
-                dialog.run()
-                dialog.destroy()
                 
             except ValueError as e:
                 # Validation failed

@@ -6,8 +6,9 @@ import os
 import time
 import re
 import secrets
+from functools import wraps
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
@@ -16,6 +17,32 @@ import certifi
 
 
 logger = logging.getLogger(__name__)
+
+
+def retry_on_failure(max_retries: int = 3):
+    """Decorator to retry a function on failure with exponential backoff.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+    """
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                        logger.warning(f"{func.__name__} attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"{func.__name__} failed after {max_retries} attempts: {e}")
+            raise Exception(f"{func.__name__} failed after {max_retries} attempts: {last_error}")
+        return wrapper
+    return decorator
 
 
 class OneDriveClient:
@@ -385,13 +412,13 @@ class OneDriveClient:
             logger.debug(f"File not found on OneDrive: {remote_path}")
             return None
     
-    def download_file(self, file_id: str, local_path: Path, max_retries: int = 3) -> Dict[str, Any]:
+    @retry_on_failure(max_retries=3)
+    def download_file(self, file_id: str, local_path: Path) -> Dict[str, Any]:
         """Download file from OneDrive with retry logic.
         
         Args:
             file_id: OneDrive file ID
             local_path: Local destination path
-            max_retries: Maximum number of retry attempts (default: 3)
             
         Returns:
             File metadata including eTag
@@ -399,55 +426,41 @@ class OneDriveClient:
         Raises:
             Exception: If download fails after all retries
         """
-        last_error = None
+        # Get metadata first
+        metadata = self.get_file_metadata(file_id)
         
-        for attempt in range(max_retries):
-            try:
-                # Get metadata first
-                metadata = self.get_file_metadata(file_id)
-                
-                endpoint = f"/me/drive/items/{file_id}/content"
-                response = self._api_request('GET', endpoint, stream=True)
-                
-                # Create parent directories
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                # Download with temporary file first for atomicity
-                temp_path = local_path.with_suffix(local_path.suffix + '.tmp')
-                try:
-                    with open(temp_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    
-                    # Move to final location only if download succeeded
-                    temp_path.replace(local_path)
-                    
-                    logger.info(f"Downloaded: {local_path}")
-                    return metadata
-                    
-                except Exception as e:
-                    # Clean up temp file on error
-                    if temp_path.exists():
-                        temp_path.unlink()
-                    raise
-                    
-            except Exception as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    logger.warning(f"Download attempt {attempt + 1} failed for {local_path}, retrying: {e}")
-                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
-                else:
-                    logger.error(f"Download failed after {max_retries} attempts for {local_path}: {e}")
+        endpoint = f"/me/drive/items/{file_id}/content"
+        response = self._api_request('GET', endpoint, stream=True)
         
-        raise Exception(f"Download failed after {max_retries} attempts: {last_error}")
+        # Create parent directories
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Download with temporary file first for atomicity
+        temp_path = local_path.with_suffix(local_path.suffix + '.tmp')
+        try:
+            with open(temp_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            # Move to final location only if download succeeded
+            temp_path.replace(local_path)
+            
+            logger.info(f"Downloaded: {local_path}")
+            return metadata
+            
+        except Exception as e:
+            # Clean up temp file on error
+            if temp_path.exists():
+                temp_path.unlink()
+            raise
     
-    def upload_file(self, local_path: Path, remote_path: str, max_retries: int = 3) -> Dict[str, Any]:
+    @retry_on_failure(max_retries=3)
+    def upload_file(self, local_path: Path, remote_path: str) -> Dict[str, Any]:
         """Upload file to OneDrive with retry logic.
         
         Args:
             local_path: Local file path
             remote_path: Remote destination path
-            max_retries: Maximum number of retry attempts (default: 3)
             
         Returns:
             Upload response metadata including eTag
@@ -459,27 +472,14 @@ class OneDriveClient:
         remote_path = remote_path.lstrip('/')
         
         endpoint = f"/me/drive/root:/{remote_path}:/content"
-        last_error = None
         
-        for attempt in range(max_retries):
-            try:
-                with open(local_path, 'rb') as f:
-                    headers = {'Content-Type': 'application/octet-stream'}
-                    response = self._api_request('PUT', endpoint, data=f, headers=headers)
-                
-                metadata = response.json()
-                logger.info(f"Uploaded: {local_path} -> {remote_path}")
-                return metadata
-                
-            except Exception as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    logger.warning(f"Upload attempt {attempt + 1} failed for {local_path}, retrying: {e}")
-                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
-                else:
-                    logger.error(f"Upload failed after {max_retries} attempts for {local_path}: {e}")
+        with open(local_path, 'rb') as f:
+            headers = {'Content-Type': 'application/octet-stream'}
+            response = self._api_request('PUT', endpoint, data=f, headers=headers)
         
-        raise Exception(f"Upload failed after {max_retries} attempts: {last_error}")
+        metadata = response.json()
+        logger.info(f"Uploaded: {local_path} -> {remote_path}")
+        return metadata
     
     def create_folder(self, folder_path: str) -> Dict[str, Any]:
         """Create a folder on OneDrive.

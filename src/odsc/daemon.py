@@ -335,277 +335,324 @@ class SyncDaemon:
         
         sync_dir = self.config.sync_directory
         
-        # Ensure 'files' key exists in state
+        # Initialize state
+        self._ensure_state_initialized()
+        
+        # Fetch and process changes from OneDrive
+        remote_files = self._fetch_and_process_remote_changes(sync_dir)
+        if remote_files is None:
+            return  # Error occurred, abort sync
+        
+        # Scan local filesystem
+        local_files, local_folders = self._scan_local_filesystem(sync_dir)
+        
+        # Get all remote files from cache
+        all_remote_files = self._get_all_remote_files()
+        
+        # Sync files
+        self._sync_files(sync_dir, local_files, remote_files, all_remote_files)
+        
+        # Sync folders
+        all_remote_folders = self._get_all_remote_folders()
+        self._sync_folders(sync_dir, local_folders, all_remote_folders)
+        
+        # Finalize sync
+        self._finalize_sync()
+        
+        logger.info("Periodic sync completed")
+    
+    def _ensure_state_initialized(self) -> None:
+        """Ensure state dictionaries are initialized."""
         if 'files' not in self.state:
             self.state['files'] = {}
         if 'file_cache' not in self.state:
             self.state['file_cache'] = {}
+    
+    def _fetch_and_process_remote_changes(self, sync_dir: Path) -> Optional[Dict[str, Any]]:
+        """Fetch changes from OneDrive and process them.
         
-        # Get delta token from state (None for initial sync)
+        Returns:
+            Dictionary of remote files, or None if error occurred
+        """
+        delta_token = self.state.get('delta_token')
         delta_token = self.state.get('delta_token')
         
-        # Fetch changes using delta query (much faster than list_all_files)
+        # Fetch changes using delta query
         logger.info("Fetching changes from OneDrive using delta query...")
         try:
             if delta_token:
-                # Incremental sync - only changed files
                 changes, new_delta_token = self.client.get_delta(delta_token)
                 logger.info(f"Incremental sync: {len(changes)} changes detected")
             else:
-                # Initial sync - all files
                 changes, new_delta_token = self.client.get_delta(None)
                 logger.info(f"Initial sync: {len(changes)} total items")
             
-            # Store new delta token for next sync
             self.state['delta_token'] = new_delta_token
             
         except Exception as e:
             logger.error(f"Failed to fetch changes: {e}", exc_info=True)
-            # On error, fall back to full sync next time
             self.state['delta_token'] = None
-            return
+            return None
         
-        # Process changes and update cache
+        # Process changes
         remote_files = {}
         for item in changes:
-            # Check for deletions
             if item.get('deleted'):
-                # Item was deleted on OneDrive
-                item_id = item['id']
-                # Find and remove from cache by ID
-                for path, cached_item in list(self.state['file_cache'].items()):
-                    if cached_item.get('id') == item_id:
-                        logger.info(f"Item deleted on OneDrive: {path}")
-                        # Handle deletion
-                        if path in self.state.get('files', {}):
-                            local_path = sync_dir / path
-                            if local_path.exists():
-                                self._move_to_recycle_bin(local_path, path)
-                            del self.state['files'][path]
-                        del self.state['file_cache'][path]
-                        break
-                continue
-            
-            # Skip folders for file processing
-            if 'folder' in item:
-                # Update folder in cache but don't process as file
-                try:
-                    # Skip the drive root itself (has 'root' key)
-                    if 'root' in item:
-                        logger.debug("Skipping drive root object")
-                        continue
-                    
-                    # Extract and validate path
-                    full_path = self._extract_item_path(item)
-                    self._validate_sync_path(full_path, sync_dir)
-                    
-                    # Store full folder metadata (not just id and is_folder flag)
-                    # This ensures GUI can display folder names properly
-                    self.state['file_cache'][full_path] = item
-                except (SecurityError, Exception) as e:
-                    logger.warning(f"Skipping unsafe folder: {e}")
-                continue
-            
-            # Process files
-            try:
-                # Extract and validate path
-                full_path = self._extract_item_path(item)
-                validated_path = self._validate_sync_path(full_path, sync_dir)
-                
-                # Update cache with latest metadata
-                self.state['file_cache'][full_path] = {
-                    'id': item['id'],
-                    'size': item.get('size', 0),
-                    'eTag': item.get('eTag', ''),
-                    'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
-                    'is_folder': False,
-                }
-                
-                remote_files[full_path] = {
-                    'id': item['id'],
-                    'size': item.get('size', 0),
-                    'eTag': item.get('eTag', ''),
-                    'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
-                }
-            except SecurityError as e:
-                logger.warning(f"Skipping unsafe remote path: {e}")
-                continue
-            except Exception as e:
-                logger.warning(f"Error processing remote item: {e}")
-                continue
+                self._process_remote_deletion(item)
+            elif 'folder' in item:
+                self._process_remote_folder(item, sync_dir)
+            else:
+                file_info = self._process_remote_file(item, sync_dir)
+                if file_info:
+                    remote_files[file_info['path']] = file_info['metadata']
         
         logger.info(f"Processed {len(remote_files)} remote files from delta")
+        return remote_files
+    
+    def _process_remote_deletion(self, item: Dict[str, Any]) -> None:
+        """Process a deleted item from OneDrive."""
+        item_id = item['id']
+        for path, cached_item in list(self.state['file_cache'].items()):
+            if cached_item.get('id') == item_id:
+                logger.info(f"Item deleted on OneDrive: {path}")
+                
+                if path in self.state.get('files', {}):
+                    local_path = self.config.sync_directory / path
+                    if local_path.exists():
+                        self._move_to_recycle_bin(local_path, path)
+                    del self.state['files'][path]
+                
+                del self.state['file_cache'][path]
+                break
+    
+    def _process_remote_folder(self, item: Dict[str, Any], sync_dir: Path) -> None:
+        """Process a folder from OneDrive delta."""
+        try:
+            if 'root' in item:
+                logger.debug("Skipping drive root object")
+                return
+            
+            full_path = self._extract_item_path(item)
+            self._validate_sync_path(full_path, sync_dir)
+            self.state['file_cache'][full_path] = item
+        except (SecurityError, Exception) as e:
+            logger.warning(f"Skipping unsafe folder: {e}")
+    
+    def _process_remote_file(self, item: Dict[str, Any], sync_dir: Path) -> Optional[Dict[str, Any]]:
+        """Process a file from OneDrive delta.
         
-        # Scan local directory for files
+        Returns:
+            Dict with 'path' and 'metadata' keys, or None if error
+        """
+        try:
+            full_path = self._extract_item_path(item)
+            self._validate_sync_path(full_path, sync_dir)
+            
+            metadata = {
+                'id': item['id'],
+                'size': item.get('size', 0),
+                'eTag': item.get('eTag', ''),
+                'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
+            }
+            
+            # Update cache
+            self.state['file_cache'][full_path] = {**metadata, 'is_folder': False}
+            
+            return {'path': full_path, 'metadata': metadata}
+            
+        except SecurityError as e:
+            logger.warning(f"Skipping unsafe remote path: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error processing remote item: {e}")
+            return None
+    
+    def _scan_local_filesystem(self, sync_dir: Path) -> tuple:
+        """Scan local filesystem for files and folders.
+        
+        Returns:
+            Tuple of (local_files dict, local_folders dict)
+        """
         local_files = {}
         local_folders = {}
+        
         for path in sync_dir.rglob('*'):
             # Skip hidden files and directories
             if any(part.startswith('.') for part in path.parts):
                 continue
             
-            if path.is_file():
-                try:
-                    rel_path = str(path.relative_to(sync_dir))
+            try:
+                rel_path = str(path.relative_to(sync_dir))
+                
+                if path.is_file():
                     local_files[rel_path] = {
                         'path': path,
                         'mtime': path.stat().st_mtime,
                         'size': path.stat().st_size,
                     }
-                except (OSError, PermissionError) as e:
-                    logger.warning(f"Cannot access {path}: {e}")
-                    continue
-            elif path.is_dir():
-                try:
-                    rel_path = str(path.relative_to(sync_dir))
-                    local_folders[rel_path] = {
-                        'path': path,
-                    }
-                except (OSError, PermissionError) as e:
-                    logger.warning(f"Cannot access {path}: {e}")
-                    continue
+                elif path.is_dir():
+                    local_folders[rel_path] = {'path': path}
+                    
+            except (OSError, PermissionError) as e:
+                logger.warning(f"Cannot access {path}: {e}")
         
         logger.info(f"Found {len(local_files)} local files and {len(local_folders)} local folders")
-        
-        # Get all remote files from cache (exclude folders)
+        return local_files, local_folders
+    
+    def _get_all_remote_files(self) -> Dict[str, Any]:
+        """Get all remote files from cache (excluding folders)."""
         all_remote_files = {}
         for path, cached in self.state['file_cache'].items():
-            # Exclude both OneDrive folders and daemon-created folders
             if not ('folder' in cached or cached.get('is_folder', False)):
                 all_remote_files[path] = cached
         
         logger.info(f"Total remote files in cache: {len(all_remote_files)}")
+        return all_remote_files
+    
+    def _get_all_remote_folders(self) -> Dict[str, Any]:
+        """Get all remote folders from cache."""
+        all_remote_folders = {}
+        for path, cached in self.state['file_cache'].items():
+            if 'folder' in cached or cached.get('is_folder', False):
+                all_remote_folders[path] = cached
         
-        # Process each file with robust conflict detection
-        # Use cache for full remote file list, remote_files only for changed files
+        logger.info(f"Total remote folders in cache: {len(all_remote_folders)}")
+        return all_remote_folders
+    
+    def _sync_files(self, sync_dir: Path, local_files: Dict, remote_files: Dict, all_remote_files: Dict) -> None:
+        """Sync files between local and remote."""
         all_paths = set(local_files.keys()) | set(all_remote_files.keys())
         
         for rel_path in all_paths:
             local_info = local_files.get(rel_path)
-            # Check if file changed (in delta) or just exists (in cache)
             remote_info = remote_files.get(rel_path) or all_remote_files.get(rel_path)
             state_entry = self.state['files'].get(rel_path, {})
             
             try:
                 action = self._determine_sync_action(rel_path, local_info, remote_info, state_entry)
-                
-                if action == 'upload':
-                    logger.info(f"Uploading: {rel_path}")
-                    try:
-                        metadata = self.client.upload_file(local_info['path'], rel_path)
-                        self.state['files'][rel_path] = {
-                            'mtime': local_info['mtime'],
-                            'size': local_info['size'],
-                            'eTag': metadata.get('eTag', ''),
-                            'remote_modified': metadata.get('lastModifiedDateTime', ''),
-                            'downloaded': True,  # We created it locally, so mark as downloaded
-                            'upload_error': None,  # Clear any previous error
-                        }
-                    except Exception as upload_err:
-                        logger.error(f"Upload failed for {rel_path}: {upload_err}")
-                        self.state['files'][rel_path] = {
-                            'mtime': local_info['mtime'],
-                            'size': local_info['size'],
-                            'downloaded': True,
-                            'upload_error': str(upload_err),
-                        }
-                    
-                elif action == 'download':
-                    logger.info(f"Downloading updated version: {rel_path}")
-                    try:
-                        # Validate path before download
-                        local_path = self._validate_sync_path(rel_path, sync_dir)
-                        metadata = self.client.download_file(remote_info['id'], local_path)
-                        self.state['files'][rel_path] = {
-                            'mtime': local_path.stat().st_mtime,
-                            'size': remote_info['size'],
-                            'eTag': remote_info['eTag'],
-                            'remote_modified': remote_info['lastModifiedDateTime'],
-                            'downloaded': True,
-                            'upload_error': None,
-                        }
-                    except Exception as download_err:
-                        logger.error(f"Download failed for {rel_path}: {download_err}")
-                        # Don't update state on download failure to allow retry
-                    
-                elif action == 'recycle':
-                    logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
-                    # Validate path before deletion
-                    local_path = self._validate_sync_path(rel_path, sync_dir)
-                    self._move_to_recycle_bin(local_path, rel_path)
-                    # Remove from both state and cache
-                    if rel_path in self.state['files']:
-                        del self.state['files'][rel_path]
-                    if rel_path in self.state['file_cache']:
-                        del self.state['file_cache'][rel_path]
-                        logger.debug(f"Removed {rel_path} from cache")
-                    
-                elif action == 'conflict':
-                    logger.warning(f"CONFLICT detected for {rel_path} - keeping both versions")
-                    # Keep local version and download remote as .conflict file
-                    conflict_rel = f"{rel_path}.conflict"
-                    conflict_path = self._validate_sync_path(conflict_rel, sync_dir)
-                    metadata = self.client.download_file(remote_info['id'], conflict_path)
-                    logger.info(f"Saved remote version as: {conflict_path}")
-                    
-                elif action == 'skip':
-                    logger.debug(f"Skipping (up to date): {rel_path}")
-                    
+                self._execute_sync_action(action, rel_path, sync_dir, local_info, remote_info)
             except Exception as e:
                 logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
+    
+    def _execute_sync_action(self, action: str, rel_path: str, sync_dir: Path, 
+                            local_info: Optional[Dict], remote_info: Optional[Dict]) -> None:
+        """Execute a determined sync action."""
+        if action == 'upload':
+            self._upload_file(rel_path, local_info)
+        elif action == 'download':
+            self._download_file(rel_path, sync_dir, remote_info)
+        elif action == 'recycle':
+            self._recycle_remote_deleted_file(rel_path, sync_dir)
+        elif action == 'conflict':
+            self._handle_file_conflict(rel_path, sync_dir, remote_info)
+        elif action == 'skip':
+            logger.debug(f"Skipping (up to date): {rel_path}")
+    
+    def _upload_file(self, rel_path: str, local_info: Dict) -> None:
+        """Upload a local file to OneDrive."""
+        logger.info(f"Uploading: {rel_path}")
+        try:
+            metadata = self.client.upload_file(local_info['path'], rel_path)
+            self.state['files'][rel_path] = {
+                'mtime': local_info['mtime'],
+                'size': local_info['size'],
+                'eTag': metadata.get('eTag', ''),
+                'remote_modified': metadata.get('lastModifiedDateTime', ''),
+                'downloaded': True,
+                'upload_error': None,
+            }
+        except Exception as upload_err:
+            logger.error(f"Upload failed for {rel_path}: {upload_err}")
+            self.state['files'][rel_path] = {
+                'mtime': local_info['mtime'],
+                'size': local_info['size'],
+                'downloaded': True,
+                'upload_error': str(upload_err),
+            }
+    
+    def _download_file(self, rel_path: str, sync_dir: Path, remote_info: Dict) -> None:
+        """Download a file from OneDrive."""
+        logger.info(f"Downloading updated version: {rel_path}")
+        try:
+            local_path = self._validate_sync_path(rel_path, sync_dir)
+            metadata = self.client.download_file(remote_info['id'], local_path)
+            self.state['files'][rel_path] = {
+                'mtime': local_path.stat().st_mtime,
+                'size': remote_info['size'],
+                'eTag': remote_info['eTag'],
+                'remote_modified': remote_info['lastModifiedDateTime'],
+                'downloaded': True,
+                'upload_error': None,
+            }
+        except Exception as download_err:
+            logger.error(f"Download failed for {rel_path}: {download_err}")
+    
+    def _recycle_remote_deleted_file(self, rel_path: str, sync_dir: Path) -> None:
+        """Handle a file that was deleted remotely."""
+        logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
+        local_path = self._validate_sync_path(rel_path, sync_dir)
+        self._move_to_recycle_bin(local_path, rel_path)
         
-        # Sync folders
-        # Get all remote folders from cache
-        all_remote_folders = {}
-        for path, cached in self.state['file_cache'].items():
-            # Check both OneDrive format ('folder' key) and daemon format ('is_folder' flag)
-            if 'folder' in cached or cached.get('is_folder', False):
-                all_remote_folders[path] = cached
+        if rel_path in self.state['files']:
+            del self.state['files'][rel_path]
+        if rel_path in self.state['file_cache']:
+            del self.state['file_cache'][rel_path]
+            logger.debug(f"Removed {rel_path} from cache")
+    
+    def _handle_file_conflict(self, rel_path: str, sync_dir: Path, remote_info: Dict) -> None:
+        """Handle a file conflict by keeping both versions."""
+        logger.warning(f"CONFLICT detected for {rel_path} - keeping both versions")
+        conflict_rel = f"{rel_path}.conflict"
+        conflict_path = self._validate_sync_path(conflict_rel, sync_dir)
+        metadata = self.client.download_file(remote_info['id'], conflict_path)
+        logger.info(f"Saved remote version as: {conflict_path}")
+    
+    def _sync_folders(self, sync_dir: Path, local_folders: Dict, all_remote_folders: Dict) -> None:
+        """Sync folders between local and remote."""
+        # Handle deletions first
+        self._delete_folders_removed_from_remote(sync_dir, local_folders, all_remote_folders)
         
-        logger.info(f"Total remote folders in cache: {len(all_remote_folders)}")
+        # Upload new local folders to OneDrive
+        self._upload_new_local_folders(local_folders, all_remote_folders)
         
-        # Process folders - handle deletions FIRST (before uploads)
-        folders_to_delete = []
-        for folder_path in local_folders:
-            if folder_path not in all_remote_folders:
-                # Local folder exists but not on OneDrive
-                # This means it was deleted from OneDrive - delete locally
-                folders_to_delete.append(folder_path)
+        # Create missing local folders from OneDrive
+        self._create_missing_local_folders(sync_dir, local_folders, all_remote_folders)
+    
+    def _delete_folders_removed_from_remote(self, sync_dir: Path, local_folders: Dict, 
+                                           all_remote_folders: Dict) -> None:
+        """Delete local folders that were removed from OneDrive."""
+        folders_to_delete = [fp for fp in local_folders if fp not in all_remote_folders]
         
-        # Delete folders and remove from local_folders dict
         for folder_path in folders_to_delete:
             try:
                 local_path = self._validate_sync_path(folder_path, sync_dir)
                 logger.info(f"Folder deleted from OneDrive, removing locally: {folder_path}")
-                # Move to recycle bin instead of permanent delete
                 self._move_to_recycle_bin(local_path, folder_path)
-                # Remove from local_folders so we don't try to upload it
+                
                 del local_folders[folder_path]
-                # Remove from cache so GUI doesn't show it
                 if folder_path in self.state['file_cache']:
                     del self.state['file_cache'][folder_path]
                     logger.debug(f"Removed {folder_path} from cache")
             except Exception as e:
                 logger.error(f"Failed to remove local folder {folder_path}: {e}")
-        
-        # Process folders - upload new local folders to OneDrive
-        for folder_path, folder_info in local_folders.items():
+    
+    def _upload_new_local_folders(self, local_folders: Dict, all_remote_folders: Dict) -> None:
+        """Upload new local folders to OneDrive."""
+        for folder_path in local_folders:
             if folder_path not in all_remote_folders:
-                # New local folder not on OneDrive
                 try:
                     logger.info(f"Creating folder on OneDrive: {folder_path}")
                     metadata = self.client.create_folder(folder_path)
-                    # Store full metadata (not just id and is_folder)
-                    # This ensures GUI can display folder names properly
                     self.state['file_cache'][folder_path] = metadata
                     logger.info(f"Folder created on OneDrive: {folder_path}")
                 except Exception as e:
                     logger.error(f"Failed to create folder {folder_path} on OneDrive: {e}")
-        
-        # Process folders - create missing local folders from OneDrive
-        for folder_path, folder_info in all_remote_folders.items():
+    
+    def _create_missing_local_folders(self, sync_dir: Path, local_folders: Dict, 
+                                     all_remote_folders: Dict) -> None:
+        """Create local folders that exist on OneDrive but not locally."""
+        for folder_path in all_remote_folders:
             if folder_path not in local_folders:
-                # Remote folder not present locally
                 try:
                     local_path = self._validate_sync_path(folder_path, sync_dir)
                     logger.info(f"Creating local folder: {folder_path}")
@@ -613,15 +660,12 @@ class SyncDaemon:
                     logger.info(f"Local folder created: {folder_path}")
                 except Exception as e:
                     logger.error(f"Failed to create local folder {folder_path}: {e}")
-        
-        # Update sync time
+    
+    def _finalize_sync(self) -> None:
+        """Finalize sync by updating state and cleaning up."""
         self.state['last_sync'] = datetime.now().isoformat()
         self.config.save_state(self.state)
-        
-        # Clean up old files from recycle bin
         self._cleanup_recycle_bin()
-        
-        logger.info("Periodic sync completed")
     
     def _move_to_recycle_bin(self, local_path: Path, rel_path: str) -> None:
         """Move file to system recycle bin/trash.
