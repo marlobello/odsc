@@ -373,13 +373,13 @@ class SyncDaemon:
             if 'folder' in item:
                 # Update folder in cache but don't process as file
                 try:
+                    # Skip the drive root itself (has 'root' key)
+                    if 'root' in item:
+                        logger.debug("Skipping drive root object")
+                        continue
+                    
                     parent_path = item.get('parentReference', {}).get('path', '')
                     name = item.get('name', '')
-                    
-                    # Skip special 'root' folder (OneDrive system folder)
-                    if name == 'root' and not parent_path:
-                        logger.debug("Skipping special 'root' system folder")
-                        continue
                     
                     if parent_path:
                         safe_parent = self._sanitize_onedrive_path(parent_path)
