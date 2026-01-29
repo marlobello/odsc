@@ -23,7 +23,7 @@ As stated in the [MIT License](LICENSE), this software is provided **"AS IS", WI
 - ❌ **NOT** supported by Microsoft in any way
 - ❌ **NOT** covered by any Microsoft support agreement or warranty
 
-This is a **personal project** developed independently on personal time, using personal resources. Any opinions expressed in this project are those of the author and do not reflect the views of Microsoft Corporation.
+This is a **personal project**. Any opinions expressed in this project are those of the author and do not reflect the views of Microsoft Corporation.
 
 ## Third-Party Services
 
