@@ -1551,6 +1551,11 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             files: List of file metadata from OneDrive
         """
         self.remote_files = files
+        
+        # Save current tree state before clearing
+        expanded_paths = self._save_expanded_state()
+        scroll_position = self._save_scroll_position()
+        
         self.file_store.clear()
         
         # Update status
@@ -1672,10 +1677,82 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         logger.debug("Scanning for local files pending upload...")
         self._add_pending_uploads(sync_dir, remote_files_set, folder_iters)
         
-        # Expand root level folders
-        self.file_tree.expand_row(Gtk.TreePath.new_first(), False)
+        # Restore tree state
+        self._restore_expanded_state(expanded_paths)
+        self._restore_scroll_position(scroll_position)
         
         self._update_status(f"Loaded {len(files)} items")
+    
+    def _save_expanded_state(self):
+        """Save the list of expanded tree paths.
+        
+        Returns:
+            Set of expanded path tuples
+        """
+        expanded = set()
+        
+        def check_row(model, path, iter):
+            if self.file_tree.row_expanded(path):
+                # Store the file path (column 7) instead of TreePath
+                file_path = model.get_value(iter, 7)
+                if file_path:
+                    expanded.add(file_path)
+        
+        self.file_store.foreach(check_row)
+        return expanded
+    
+    def _save_scroll_position(self):
+        """Save current scroll position.
+        
+        Returns:
+            Tuple of (hadjustment_value, vadjustment_value)
+        """
+        scrolled = self.file_tree.get_parent()
+        if isinstance(scrolled, Gtk.ScrolledWindow):
+            hadj = scrolled.get_hadjustment()
+            vadj = scrolled.get_vadjustment()
+            return (hadj.get_value(), vadj.get_value())
+        return (0, 0)
+    
+    def _restore_expanded_state(self, expanded_paths):
+        """Restore expanded state of tree paths.
+        
+        Args:
+            expanded_paths: Set of file paths that were expanded
+        """
+        if not expanded_paths:
+            # If no saved state, expand root level by default
+            self.file_tree.expand_row(Gtk.TreePath.new_first(), False)
+            return
+        
+        def expand_row(model, path, iter):
+            file_path = model.get_value(iter, 7)
+            if file_path in expanded_paths:
+                self.file_tree.expand_row(path, False)
+        
+        self.file_store.foreach(expand_row)
+    
+    def _restore_scroll_position(self, position):
+        """Restore scroll position.
+        
+        Args:
+            position: Tuple of (hadjustment_value, vadjustment_value)
+        """
+        if not position:
+            return
+        
+        scrolled = self.file_tree.get_parent()
+        if isinstance(scrolled, Gtk.ScrolledWindow):
+            hadj = scrolled.get_hadjustment()
+            vadj = scrolled.get_vadjustment()
+            
+            # Restore after a short delay to ensure tree is fully rendered
+            def restore():
+                hadj.set_value(position[0])
+                vadj.set_value(position[1])
+                return False
+            
+            GLib.timeout_add(50, restore)
     
     def _add_pending_uploads(self, sync_dir: Path, remote_files_set: set, folder_iters: Dict) -> None:
         """Add local files that haven't been uploaded to OneDrive yet.
