@@ -290,9 +290,15 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         # Create log panel (bottom pane) - initially hidden
         self._create_log_panel()
         
+        # Service status info bar (created but not shown initially)
+        self.service_info_bar = None
+        
         # Load files if authenticated
         if self.client:
             self._load_remote_files()
+        
+        # Check if service is running and notify user if not
+        GLib.timeout_add(500, self._check_service_status)
     
     def _render_status_icon(self, column, cell, model, iter, data):
         """Render OneDrive-style status icon.
@@ -598,6 +604,130 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             logger.error(f"Error starting daemon: {e}", exc_info=True)
             self._show_error(f"Error starting daemon:\n{e}")
     
+    def _check_service_status(self) -> bool:
+        """Check if the ODSC systemd service is running and notify user if not.
+        
+        Returns:
+            False to stop the timer (one-time check)
+        """
+        try:
+            result = subprocess.run(
+                ['systemctl', '--user', 'is-active', 'odsc.service'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            # If service is not active, show notification
+            if result.returncode != 0:
+                logger.info("ODSC service is not running")
+                self._show_service_not_running_bar()
+            else:
+                logger.info("ODSC service is running")
+                
+        except FileNotFoundError:
+            # systemctl not available (service might not be installed)
+            logger.debug("systemctl not found, skipping service check")
+        except Exception as e:
+            logger.debug(f"Error checking service status: {e}")
+        
+        return False  # Don't repeat the timer
+    
+    def _show_service_not_running_bar(self) -> None:
+        """Show an info bar notifying that the service is not running."""
+        # Don't show if already shown
+        if self.service_info_bar is not None:
+            return
+        
+        # Create info bar
+        self.service_info_bar = Gtk.InfoBar()
+        self.service_info_bar.set_message_type(Gtk.MessageType.WARNING)
+        
+        # Add label
+        content = self.service_info_bar.get_content_area()
+        label = Gtk.Label()
+        label.set_markup(
+            "<b>OneDrive Sync Service Not Running</b>\n"
+            "The background sync service is not running. "
+            "Files will not automatically sync until the service is started."
+        )
+        label.set_line_wrap(True)
+        label.set_halign(Gtk.Align.START)
+        content.add(label)
+        
+        # Add "Start Service" button
+        self.service_info_bar.add_button("Start Service", Gtk.ResponseType.ACCEPT)
+        
+        # Add "Dismiss" button
+        self.service_info_bar.add_button("Dismiss", Gtk.ResponseType.CLOSE)
+        
+        # Connect response handler
+        self.service_info_bar.connect("response", self._on_service_info_bar_response)
+        
+        # Add to window (get the main vbox - first child of window)
+        vbox = self.get_children()[0]
+        # Insert after menubar (at position 1)
+        vbox.pack_start(self.service_info_bar, False, False, 0)
+        vbox.reorder_child(self.service_info_bar, 1)
+        
+        self.service_info_bar.show_all()
+        logger.info("Service not running notification shown")
+    
+    def _on_service_info_bar_response(self, info_bar, response_id) -> None:
+        """Handle service info bar response.
+        
+        Args:
+            info_bar: The InfoBar widget
+            response_id: Response ID
+        """
+        if response_id == Gtk.ResponseType.ACCEPT:
+            # User clicked "Start Service"
+            self._start_daemon_from_notification()
+        
+        # Hide and destroy the info bar
+        self._hide_service_info_bar()
+    
+    def _start_daemon_from_notification(self) -> None:
+        """Start the daemon from the notification bar."""
+        try:
+            result = subprocess.run(
+                ['systemctl', '--user', 'start', 'odsc.service'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                logger.info("Service started successfully from notification")
+                DialogHelper.show_info(
+                    self,
+                    "Service Started",
+                    "The OneDrive Sync service has been started successfully.",
+                    "Background synchronization is now active."
+                )
+            else:
+                logger.error(f"Failed to start service: {result.stderr}")
+                DialogHelper.show_error(
+                    self,
+                    "Failed to Start Service",
+                    f"Could not start the OneDrive Sync service:\n\n{result.stderr}\n\n"
+                    "You can start it manually with:\n  systemctl --user start odsc.service"
+                )
+        except Exception as e:
+            logger.error(f"Error starting service: {e}", exc_info=True)
+            DialogHelper.show_error(
+                self,
+                "Error Starting Service",
+                f"An error occurred while starting the service:\n\n{str(e)}"
+            )
+    
+    def _hide_service_info_bar(self) -> None:
+        """Hide and destroy the service info bar."""
+        if self.service_info_bar is not None:
+            self.service_info_bar.destroy()
+            self.service_info_bar = None
+            logger.debug("Service info bar hidden")
+    
     def _create_menubar(self) -> Gtk.MenuBar:
         """Create menu bar.
         
@@ -639,6 +769,12 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         settings_dialog_item = Gtk.MenuItem(label="Preferences...")
         settings_dialog_item.connect("activate", self._on_settings_clicked)
         settings_menu.append(settings_dialog_item)
+        
+        settings_menu.append(Gtk.SeparatorMenuItem())
+        
+        force_sync_item = Gtk.MenuItem(label="Force Sync Now")
+        force_sync_item.connect("activate", self._on_force_sync_clicked)
+        settings_menu.append(force_sync_item)
         
         menubar.append(settings_item)
         
@@ -786,6 +922,28 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         dialog = SettingsDialog(self, self.config)
         dialog.run()
         dialog.destroy()
+    
+    def _on_force_sync_clicked(self, widget) -> None:
+        """Handle force sync menu item click."""
+        try:
+            # Create force sync signal file
+            self.config.force_sync_path.touch()
+            logger.info("Force sync signal created")
+            
+            # Show confirmation dialog
+            DialogHelper.show_info(
+                self, 
+                "Sync Requested", 
+                "The daemon has been signaled to perform a sync operation.",
+                "The sync will begin within a few seconds if the daemon is running."
+            )
+        except Exception as e:
+            logger.error(f"Failed to create force sync signal: {e}")
+            DialogHelper.show_error(
+                self,
+                "Force Sync Failed",
+                f"Could not signal the daemon: {e}"
+            )
     
     def _on_about_clicked(self, widget) -> None:
         """Handle About menu item click."""

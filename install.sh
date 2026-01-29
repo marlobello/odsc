@@ -132,12 +132,34 @@ if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
     mkdir -p "$HOME/.local/share/applications"
     # Use application ID name for proper GNOME integration
     cp desktop/odsc.desktop "$HOME/.local/share/applications/com.github.odsc.desktop"
+    
+    # Validate desktop file
+    if command -v desktop-file-validate &> /dev/null; then
+        if desktop-file-validate "$HOME/.local/share/applications/com.github.odsc.desktop" 2>&1 | grep -i error; then
+            echo "⚠ Desktop file validation found errors"
+        fi
+    fi
+    
+    # Update desktop database
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    
     # Clear icon cache to ensure fresh icon loads
     rm -rf "$HOME/.cache/icon-cache.kcache" 2>/dev/null || true
-    echo "✓ Desktop entry installed"
-    echo ""
-    echo "Note: You may need to log out and back in for the icon to appear in the launcher."
+    
+    # Touch the file to update timestamp (helps GNOME detect changes)
+    touch "$HOME/.local/share/applications/com.github.odsc.desktop"
+    
+    # For GNOME Shell, we need to restart it or the user needs to log out
+    if [ "$XDG_CURRENT_DESKTOP" = "ubuntu:GNOME" ] || [ "$XDG_CURRENT_DESKTOP" = "GNOME" ]; then
+        echo "✓ Desktop entry installed"
+        echo ""
+        echo "To make the application appear in GNOME:"
+        echo "  Option 1: Press Alt+F2, type 'r', and press Enter (restart GNOME Shell)"
+        echo "  Option 2: Log out and log back in"
+        echo "  Option 3: Search for 'OneDrive' in the Activities menu"
+    else
+        echo "✓ Desktop entry installed"
+    fi
 else
     echo "Skipped desktop entry installation"
 fi

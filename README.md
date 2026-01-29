@@ -291,6 +291,33 @@ If authentication fails:
 1. Ensure GTK libraries are installed: `sudo apt-get install gir1.2-gtk-3.0`
 2. Try running from terminal to see error messages: `odsc-gui`
 
+### Application Not Appearing in Menu (GNOME/Ubuntu)
+
+After installation, the application may not immediately appear in your application menu due to GNOME Shell caching. Try these solutions:
+
+**Option 1: Search for the application**
+1. Press Super key (Windows key) to open Activities
+2. Type "OneDrive" in the search box
+3. The application should appear and can be launched
+
+**Option 2: Refresh the desktop entries** (Run the provided script)
+```bash
+./refresh-desktop-entry.sh
+```
+
+**Option 3: Restart GNOME Shell** (X11 only, not Wayland)
+1. Press `Alt+F2`
+2. Type `r` and press Enter
+
+**Option 4: Log out and log back in**
+
+**Option 5: Launch directly from terminal**
+```bash
+odsc-gui
+```
+
+Once launched, you can right-click the application icon and select "Add to Favorites" to pin it to your dock.
+
 ## Development
 
 ### Project Structure

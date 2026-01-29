@@ -2,11 +2,14 @@
 Version=1.0
 Type=Application
 Name=OneDrive Sync Client
+GenericName=Cloud Storage Sync
 Comment=Sync files with Microsoft OneDrive
 Icon=odsc
 Exec=odsc-gui
+TryExec=odsc-gui
 Terminal=false
 Categories=Network;FileTransfer;
-Keywords=onedrive;cloud;sync;backup;storage;
+Keywords=onedrive;cloud;sync;backup;storage;microsoft;
 StartupNotify=true
-StartupWMClass=com.github.odsc
+StartupWMClass=OneDrive Sync Client
+X-GNOME-UsesNotifications=true

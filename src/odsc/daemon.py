@@ -184,8 +184,12 @@ class SyncDaemon:
                     for path in pending:
                         self._sync_file(path)
                 
+                # Check for force sync signal
+                if self._check_force_sync_signal():
+                    logger.info("Force sync triggered by user")
+                    self._do_periodic_sync()
                 # Periodic full sync check
-                if self._should_do_periodic_sync():
+                elif self._should_do_periodic_sync():
                     self._do_periodic_sync()
                 
             except Exception as e:
@@ -290,6 +294,23 @@ class SyncDaemon:
         elapsed = (datetime.now() - last_sync_dt).total_seconds()
         
         return elapsed >= self.config.sync_interval
+    
+    def _check_force_sync_signal(self) -> bool:
+        """Check if force sync signal file exists.
+        
+        Returns:
+            True if force sync requested
+        """
+        force_sync_path = self.config.force_sync_path
+        if force_sync_path.exists():
+            try:
+                # Remove signal file
+                force_sync_path.unlink()
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to remove force sync signal: {e}")
+                return False
+        return False
     
     def _do_periodic_sync(self) -> None:
         """Perform periodic two-way sync of all files using delta query."""

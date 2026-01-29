@@ -22,6 +22,7 @@ class Config:
     TOKEN_FILE = ".onedrive_token"
     STATE_FILE = "sync_state.json"
     LOG_FILE = "odsc.log"
+    FORCE_SYNC_FILE = ".force_sync"
     
     def __init__(self, config_dir: Optional[Path] = None):
         """Initialize configuration manager.
@@ -36,6 +37,7 @@ class Config:
         self.token_path = self.config_dir / self.TOKEN_FILE
         self.state_path = self.config_dir / self.STATE_FILE
         self.log_path = self.config_dir / self.LOG_FILE
+        self.force_sync_path = self.config_dir / self.FORCE_SYNC_FILE
         
         self._config: Dict[str, Any] = {}
         self.load()
