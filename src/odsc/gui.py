@@ -213,6 +213,10 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         self.file_tree = Gtk.TreeView(model=self.file_store)
         self.file_tree.set_enable_tree_lines(True)
         
+        # Enable tooltips for TreeView
+        self.file_tree.set_has_tooltip(True)
+        self.file_tree.connect("query-tooltip", self._on_tree_query_tooltip)
+        
         # Column 1: Icon + Name (left-aligned)
         column_name = Gtk.TreeViewColumn("Name")
         
@@ -321,35 +325,87 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             if folder_status == 'all':
                 # All files in folder are synced
                 cell.set_property('icon-name', 'emblem-default')
-                cell.set_property('tooltip-text', 'All files synced - All files in this folder are available locally')
             elif folder_status == 'partial':
                 # Some files in folder are synced
                 cell.set_property('icon-name', 'emblem-synchronizing')
-                cell.set_property('tooltip-text', 'Partially synced - Some files in this folder are local, some are cloud-only')
             elif folder_status == 'none':
                 # No files in folder are synced
                 cell.set_property('icon-name', 'folder')
-                cell.set_property('tooltip-text', 'Cloud-only - No files in this folder are synced locally')
             else:
                 # Empty folder or no files
                 cell.set_property('icon-name', None)
-                cell.set_property('tooltip-text', 'Empty folder')
         elif error_msg:
             # Red error icon for failed uploads
             cell.set_property('icon-name', 'dialog-error')
-            cell.set_property('tooltip-text', f'Upload failed - {error_msg}')
         elif "(pending upload)" in file_name:
             # Blue sync icon for pending uploads
             cell.set_property('icon-name', 'emblem-synchronizing')
-            cell.set_property('tooltip-text', 'Pending upload - File will be uploaded to OneDrive soon')
         elif is_local:
             # Green checkmark for synced files (local copy exists)
             cell.set_property('icon-name', 'emblem-default')
-            cell.set_property('tooltip-text', 'Synced - File is available locally and synced with OneDrive')
         else:
             # Overcast cloud icon for online-only files (not downloaded)
             cell.set_property('icon-name', 'weather-overcast')
-            cell.set_property('tooltip-text', 'Cloud-only - File is on OneDrive but not downloaded locally')
+    
+    def _on_tree_query_tooltip(self, widget, x, y, keyboard_mode, tooltip):
+        """Handle tooltip queries for TreeView.
+        
+        Args:
+            widget: TreeView widget
+            x: X coordinate
+            y: Y coordinate
+            keyboard_mode: Whether triggered by keyboard
+            tooltip: Tooltip object
+            
+        Returns:
+            True if tooltip should be shown, False otherwise
+        """
+        # Get the path at the cursor position
+        result = widget.get_path_at_pos(x, y)
+        if not result:
+            return False
+        
+        path, column, cell_x, cell_y = result
+        
+        # Only show tooltips for the Status column (column 3, 0-indexed)
+        if column != widget.get_column(3):
+            return False
+        
+        model = widget.get_model()
+        iter = model.get_iter(path)
+        
+        is_local = model.get_value(iter, 4)
+        is_folder = model.get_value(iter, 6)
+        file_name = model.get_value(iter, 1)
+        error_msg = model.get_value(iter, 8)
+        
+        # Generate tooltip text based on status
+        tooltip_text = None
+        
+        if is_folder:
+            folder_status = self._get_folder_sync_status(model, iter)
+            if folder_status == 'all':
+                tooltip_text = 'All files synced - All files in this folder are available locally'
+            elif folder_status == 'partial':
+                tooltip_text = 'Partially synced - Some files in this folder are local, some are cloud-only'
+            elif folder_status == 'none':
+                tooltip_text = 'Cloud-only - No files in this folder are synced locally'
+            else:
+                tooltip_text = 'Empty folder'
+        elif error_msg:
+            tooltip_text = f'Upload failed - {error_msg}'
+        elif "(pending upload)" in file_name:
+            tooltip_text = 'Pending upload - File will be uploaded to OneDrive soon'
+        elif is_local:
+            tooltip_text = 'Synced - File is available locally and synced with OneDrive'
+        else:
+            tooltip_text = 'Cloud-only - File is on OneDrive but not downloaded locally'
+        
+        if tooltip_text:
+            tooltip.set_text(tooltip_text)
+            return True
+        
+        return False
     
     def _get_folder_sync_status(self, model, folder_iter):
         """Get sync status of all files in a folder (recursively).
