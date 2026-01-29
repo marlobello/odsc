@@ -335,6 +335,9 @@ class SyncDaemon:
         
         sync_dir = self.config.sync_directory
         
+        # Reload state to pick up any GUI changes
+        self.state = self.config.load_state()
+        
         # Initialize state
         self._ensure_state_initialized()
         
