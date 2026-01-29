@@ -534,9 +534,12 @@ class SyncDaemon:
                     # Validate path before deletion
                     local_path = self._validate_sync_path(rel_path, sync_dir)
                     self._move_to_recycle_bin(local_path, rel_path)
-                    # Remove from state
+                    # Remove from both state and cache
                     if rel_path in self.state['files']:
                         del self.state['files'][rel_path]
+                    if rel_path in self.state['file_cache']:
+                        del self.state['file_cache'][rel_path]
+                        logger.debug(f"Removed {rel_path} from cache")
                     
                 elif action == 'conflict':
                     logger.warning(f"CONFLICT detected for {rel_path} - keeping both versions")
@@ -669,6 +672,11 @@ class SyncDaemon:
         # Case 1: File only exists locally (new local file)
         if local_info and not remote_info:
             if not state_entry:
+                # Check if file is in cache (was on OneDrive before)
+                # This handles case where file was deleted from OneDrive but not in state
+                if rel_path in self.state.get('file_cache', {}):
+                    logger.info(f"{rel_path} was deleted remotely (found in cache), moving to recycle bin")
+                    return 'recycle'
                 # Never synced before, upload it
                 return 'upload'
             elif state_entry.get('eTag'):
