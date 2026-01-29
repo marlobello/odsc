@@ -327,7 +327,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 cell.set_property('icon-name', 'emblem-default')
             elif folder_status == 'partial':
                 # Some files in folder are synced
-                cell.set_property('icon-name', 'emblem-synchronizing')
+                cell.set_property('icon-name', 'emblem-dropbox-selsync')
             elif folder_status == 'none':
                 # No files in folder are synced - cloud-only
                 cell.set_property('icon-name', 'weather-overcast')

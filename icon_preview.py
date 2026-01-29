@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Icon Preview Tool for ODSC
-Shows different icon options for folder sync status
+Shows all icons with "emblem-" prefix
 """
 
 import gi
@@ -10,9 +10,9 @@ from gi.repository import Gtk
 
 class IconPreviewWindow(Gtk.Window):
     def __init__(self):
-        Gtk.Window.__init__(self, title="ODSC Folder Status Icon Preview")
+        Gtk.Window.__init__(self, title="All Emblem Icons Preview")
         self.set_border_width(20)
-        self.set_default_size(900, 700)
+        self.set_default_size(1000, 800)
         
         # Main vertical box
         main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=15)
@@ -20,12 +20,12 @@ class IconPreviewWindow(Gtk.Window):
         
         # Title
         title = Gtk.Label()
-        title.set_markup("<big><b>Choose Folder Status Icons</b></big>")
+        title.set_markup("<big><b>All Emblem Icons</b></big>")
         main_box.pack_start(title, False, False, 0)
         
         # Instructions
         instructions = Gtk.Label()
-        instructions.set_text("Hover over icons to see their names. Note the names you like for each status.")
+        instructions.set_text("All icons with 'emblem-' prefix. Icon names are selectable for copying.")
         instructions.set_line_wrap(True)
         main_box.pack_start(instructions, False, False, 0)
         
@@ -42,94 +42,58 @@ class IconPreviewWindow(Gtk.Window):
         grid_box.set_margin_bottom(10)
         scrolled.add(grid_box)
         
-        # Add sections for each status
-        self.add_status_section(grid_box, "All Files Synced", [
-            'emblem-default',           # Current - green checkmark
-            'emblem-ok',                # Alternative checkmark
-            'emblem-downloads',         # Downloaded icon
-            'folder-download',          # Folder with download
-            'folder-saved-search',      # Folder with magnifying glass
-            'emblem-synchronized',      # Sync complete
-            'folder-visiting',          # Folder with person
-            'user-home',                # Home icon
-        ])
+        # Get all emblem icons
+        emblem_icons = self.get_emblem_icons()
         
-        self.add_status_section(grid_box, "Partially Synced", [
-            'emblem-synchronizing',     # Current - sync arrows
-            'view-refresh',             # Refresh arrows
-            'emblem-system',            # System emblem
-            'appointment-soon',         # Clock icon
-            'mail-send-receive',        # Send/receive
-            'network-idle',             # Network idle
-            'folder-drag-accept',       # Folder with arrow
-            'emblem-shared',            # Shared emblem
-        ])
+        # Info label
+        info = Gtk.Label()
+        info.set_markup(f"<b>Found {len(emblem_icons)} emblem icons</b>")
+        grid_box.pack_start(info, False, False, 0)
         
-        self.add_status_section(grid_box, "Cloud-Only (No Local Files)", [
-            'folder',                   # Current - plain folder
-            'weather-overcast',         # Cloud
-            'weather-few-clouds',       # Few clouds
-            'network-server',           # Server icon
-            'folder-remote',            # Remote folder
-            'network-workgroup',        # Network workgroup
-            'user-away',                # Away icon
-            'folder-publicshare',       # Public share folder
-        ])
-        
-        self.add_status_section(grid_box, "Empty Folder", [
-            'folder',                   # Plain folder
-            'folder-new',               # New folder
-            'list-add',                 # Plus icon
-            'document-new',             # New document
-            'emblem-photos',            # Photos emblem
-            'emblem-documents',         # Documents emblem
-            'folder-visiting',          # Visiting folder
-        ])
-        
-        # Current settings label
-        current = Gtk.Label()
-        current.set_markup(
-            "\n<b>Current Settings:</b>\n"
-            "All Synced: emblem-default\n"
-            "Partial: emblem-synchronizing\n"
-            "Cloud-only: folder\n"
-            "Empty: (none)"
-        )
-        current.set_justify(Gtk.Justification.LEFT)
-        main_box.pack_start(current, False, False, 0)
+        # Display icons
+        self.add_icon_grid(grid_box, emblem_icons)
         
         # Close button
         close_btn = Gtk.Button(label="Close")
         close_btn.connect("clicked", Gtk.main_quit)
         main_box.pack_start(close_btn, False, False, 0)
     
-    def add_status_section(self, container, title, icon_names):
-        """Add a section showing icons for a specific status."""
-        # Section title
-        section_label = Gtk.Label()
-        section_label.set_markup(f"<b>{title}:</b>")
-        section_label.set_halign(Gtk.Align.START)
-        container.pack_start(section_label, False, False, 0)
+    def get_emblem_icons(self):
+        """Get all icon names that start with 'emblem-' from the current theme."""
+        icon_theme = Gtk.IconTheme.get_default()
+        all_icons = icon_theme.list_icons(None)  # Get all icons
         
+        # Filter for emblem- prefix
+        emblem_icons = sorted([icon for icon in all_icons if icon.startswith('emblem-')])
+        
+        return emblem_icons
+    
+    def add_icon_grid(self, container, icon_names):
+        """Add icons in a grid layout."""
         # Grid for icons
         grid = Gtk.Grid()
-        grid.set_row_spacing(10)
+        grid.set_row_spacing(15)
         grid.set_column_spacing(20)
         container.pack_start(grid, False, False, 0)
         
-        # Add icons in rows of 4
+        # Add icons in rows of 5
         for i, icon_name in enumerate(icon_names):
-            row = i // 4
-            col = i % 4
+            row = i // 5
+            col = i % 5
             
             # Icon + label box
             icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-            icon_box.set_size_request(150, 100)
+            icon_box.set_size_request(150, 110)
             
-            # Icon
+            # Try to load icon, show placeholder if not available
             icon = Gtk.Image()
-            icon.set_from_icon_name(icon_name, Gtk.IconSize.DIALOG)
-            icon.set_pixel_size(48)
+            try:
+                icon.set_from_icon_name(icon_name, Gtk.IconSize.DIALOG)
+                icon.set_pixel_size(48)
+            except:
+                # If icon doesn't render, show text
+                icon.set_from_icon_name('image-missing', Gtk.IconSize.DIALOG)
+            
             icon.set_tooltip_text(icon_name)
             icon_box.pack_start(icon, True, True, 0)
             
@@ -148,10 +112,6 @@ class IconPreviewWindow(Gtk.Window):
             frame.add(icon_box)
             
             grid.attach(frame, col, row, 1, 1)
-        
-        # Add separator
-        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        container.pack_start(separator, False, False, 10)
 
 def main():
     win = IconPreviewWindow()
