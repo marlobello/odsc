@@ -321,27 +321,35 @@ class OneDriveGUI(Gtk.ApplicationWindow):
             if folder_status == 'all':
                 # All files in folder are synced
                 cell.set_property('icon-name', 'emblem-default')
+                cell.set_property('tooltip-text', 'All files synced - All files in this folder are available locally')
             elif folder_status == 'partial':
                 # Some files in folder are synced
                 cell.set_property('icon-name', 'emblem-synchronizing')
+                cell.set_property('tooltip-text', 'Partially synced - Some files in this folder are local, some are cloud-only')
             elif folder_status == 'none':
                 # No files in folder are synced
                 cell.set_property('icon-name', 'folder')
+                cell.set_property('tooltip-text', 'Cloud-only - No files in this folder are synced locally')
             else:
                 # Empty folder or no files
                 cell.set_property('icon-name', None)
+                cell.set_property('tooltip-text', 'Empty folder')
         elif error_msg:
             # Red error icon for failed uploads
             cell.set_property('icon-name', 'dialog-error')
+            cell.set_property('tooltip-text', f'Upload failed - {error_msg}')
         elif "(pending upload)" in file_name:
             # Blue sync icon for pending uploads
             cell.set_property('icon-name', 'emblem-synchronizing')
+            cell.set_property('tooltip-text', 'Pending upload - File will be uploaded to OneDrive soon')
         elif is_local:
             # Green checkmark for synced files (local copy exists)
             cell.set_property('icon-name', 'emblem-default')
+            cell.set_property('tooltip-text', 'Synced - File is available locally and synced with OneDrive')
         else:
             # Overcast cloud icon for online-only files (not downloaded)
             cell.set_property('icon-name', 'weather-overcast')
+            cell.set_property('tooltip-text', 'Cloud-only - File is on OneDrive but not downloaded locally')
     
     def _get_folder_sync_status(self, model, folder_iter):
         """Get sync status of all files in a folder (recursively).
