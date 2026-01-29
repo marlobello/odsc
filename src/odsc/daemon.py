@@ -377,27 +377,42 @@ class SyncDaemon:
                 
                 if action == 'upload':
                     logger.info(f"Uploading: {rel_path}")
-                    metadata = self.client.upload_file(local_info['path'], rel_path)
-                    self.state['files'][rel_path] = {
-                        'mtime': local_info['mtime'],
-                        'size': local_info['size'],
-                        'eTag': metadata.get('eTag', ''),
-                        'remote_modified': metadata.get('lastModifiedDateTime', ''),
-                        'downloaded': True,  # We created it locally, so mark as downloaded
-                    }
+                    try:
+                        metadata = self.client.upload_file(local_info['path'], rel_path)
+                        self.state['files'][rel_path] = {
+                            'mtime': local_info['mtime'],
+                            'size': local_info['size'],
+                            'eTag': metadata.get('eTag', ''),
+                            'remote_modified': metadata.get('lastModifiedDateTime', ''),
+                            'downloaded': True,  # We created it locally, so mark as downloaded
+                            'upload_error': None,  # Clear any previous error
+                        }
+                    except Exception as upload_err:
+                        logger.error(f"Upload failed for {rel_path}: {upload_err}")
+                        self.state['files'][rel_path] = {
+                            'mtime': local_info['mtime'],
+                            'size': local_info['size'],
+                            'downloaded': True,
+                            'upload_error': str(upload_err),
+                        }
                     
                 elif action == 'download':
                     logger.info(f"Downloading updated version: {rel_path}")
-                    # Validate path before download
-                    local_path = self._validate_sync_path(rel_path, sync_dir)
-                    metadata = self.client.download_file(remote_info['id'], local_path)
-                    self.state['files'][rel_path] = {
-                        'mtime': local_path.stat().st_mtime,
-                        'size': remote_info['size'],
-                        'eTag': remote_info['eTag'],
-                        'remote_modified': remote_info['lastModifiedDateTime'],
-                        'downloaded': True,
-                    }
+                    try:
+                        # Validate path before download
+                        local_path = self._validate_sync_path(rel_path, sync_dir)
+                        metadata = self.client.download_file(remote_info['id'], local_path)
+                        self.state['files'][rel_path] = {
+                            'mtime': local_path.stat().st_mtime,
+                            'size': remote_info['size'],
+                            'eTag': remote_info['eTag'],
+                            'remote_modified': remote_info['lastModifiedDateTime'],
+                            'downloaded': True,
+                            'upload_error': None,
+                        }
+                    except Exception as download_err:
+                        logger.error(f"Download failed for {rel_path}: {download_err}")
+                        # Don't update state on download failure to allow retry
                     
                 elif action == 'recycle':
                     logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
@@ -576,19 +591,38 @@ class SyncDaemon:
         
         try:
             # Upload file
-            self.client.upload_file(path, str(rel_path))
+            metadata = self.client.upload_file(path, str(rel_path))
             
-            # Update state
+            # Update state - clear any previous error
             self.state['files'][str(rel_path)] = {
                 'mtime': path.stat().st_mtime,
+                'size': path.stat().st_size,
+                'eTag': metadata.get('eTag', ''),
+                'remote_modified': metadata.get('lastModifiedDateTime', ''),
                 'synced': True,
+                'downloaded': True,
+                'upload_error': None,  # Clear error on success
             }
             self.config.save_state(self.state)
             
             logger.info(f"Synced file: {rel_path}")
             
         except Exception as e:
-            logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
+            error_msg = str(e)
+            logger.error(f"Failed to sync {rel_path}: {error_msg}", exc_info=True)
+            
+            # Track failed upload in state
+            if 'files' not in self.state:
+                self.state['files'] = {}
+            
+            self.state['files'][str(rel_path)] = {
+                'mtime': path.stat().st_mtime,
+                'size': path.stat().st_size,
+                'synced': False,
+                'downloaded': True,
+                'upload_error': error_msg,
+            }
+            self.config.save_state(self.state)
 
 
 def main():

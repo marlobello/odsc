@@ -208,8 +208,8 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         main_content_box.pack_start(scrolled, True, True, 0)
         
-        # TreeView for file/folder hierarchy (icon, name, size, modified, local, id, is_folder, path)
-        self.file_store = Gtk.TreeStore(str, str, str, str, bool, str, bool, str)
+        # TreeView for file/folder hierarchy (icon, name, size, modified, local, id, is_folder, path, error)
+        self.file_store = Gtk.TreeStore(str, str, str, str, bool, str, bool, str, str)
         self.file_tree = Gtk.TreeView(model=self.file_store)
         self.file_tree.set_enable_tree_lines(True)
         
@@ -307,10 +307,14 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         is_local = model.get_value(iter, 4)  # Column 4 is local status
         is_folder = model.get_value(iter, 6)  # Column 6 is folder flag
         file_name = model.get_value(iter, 1)  # Column 1 is name
+        error_msg = model.get_value(iter, 8)  # Column 8 is error message
         
         if is_folder:
             # Don't show status icon for folders
             cell.set_property('icon-name', None)
+        elif error_msg:
+            # Red error icon for failed uploads
+            cell.set_property('icon-name', 'dialog-error')
         elif "(pending upload)" in file_name:
             # Blue sync icon for pending uploads
             cell.set_property('icon-name', 'emblem-synchronizing')
@@ -1153,7 +1157,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 is_local = (sync_dir / full_path).exists()
                 
                 iter = self.file_store.append(parent_iter, [
-                    icon, name, size_str, modified, is_local, item_id, True, full_path
+                    icon, name, size_str, modified, is_local, item_id, True, full_path, ""
                 ])
                 folder_iters[full_path] = iter
                 logger.debug(f"Added folder: {full_path}")
@@ -1164,12 +1168,17 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 size = self._format_size(item.get('size', 0))
                 modified = item.get('lastModifiedDateTime', '')[:10] if 'lastModifiedDateTime' in item else ''
                 
-                # Check if file exists locally
+                # Check if file exists locally and get error status
                 local_path = sync_dir / full_path
                 is_local = local_path.exists()
                 
+                # Check for upload errors from state
+                state = self.config.load_state()
+                file_state = state.get('files', {}).get(full_path, {})
+                error_msg = file_state.get('upload_error', '')
+                
                 self.file_store.append(parent_iter, [
-                    icon, name, size, modified, is_local, item_id, False, full_path
+                    icon, name, size, modified, is_local, item_id, False, full_path, error_msg
                 ])
                 logger.debug(f"Added file: {full_path}")
         
@@ -1217,13 +1226,18 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                                 logger.debug(f"Parent folder not in tree, skipping: {rel_path}")
                                 continue
                         
-                        # Add file with upload icon
+                        # Add file with upload icon or error icon
                         icon = "emblem-synchronizing"  # Upload pending icon
                         size = self._format_size(path.stat().st_size)
                         modified = ""
                         
+                        # Check for upload errors from state
+                        state = self.config.load_state()
+                        file_state = state.get('files', {}).get(rel_path, {})
+                        error_msg = file_state.get('upload_error', '')
+                        
                         self.file_store.append(parent_iter, [
-                            icon, f"{name} (pending upload)", size, modified, True, "", False, rel_path
+                            icon, f"{name} (pending upload)", size, modified, True, "", False, rel_path, error_msg
                         ])
                         pending_count += 1
                         logger.debug(f"Added pending upload: {rel_path}")
@@ -1272,7 +1286,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 # Validate path before download
                 local_path = self._validate_sync_path(rel_path, self.config.sync_directory)
                 
-                # Download file
+                # Download file with retry logic
                 metadata = self.client.download_file(file_id, local_path)
                 
                 # Update sync state to mark as downloaded
@@ -1286,6 +1300,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                     'eTag': metadata.get('eTag', ''),
                     'remote_modified': metadata.get('lastModifiedDateTime', ''),
                     'downloaded': True,  # Mark as explicitly downloaded by user
+                    'upload_error': None,  # Clear any previous error
                 }
                 self.config.save_state(state)
                 
@@ -1293,8 +1308,10 @@ class OneDriveGUI(Gtk.ApplicationWindow):
                 GLib.idle_add(self._update_status, f"Downloaded {file_name}")
                 GLib.idle_add(self._load_remote_files)  # Refresh to update local status
             except Exception as e:
-                logger.error(f"Failed to download {file_name}: {e}")
-                GLib.idle_add(self._show_error, f"Failed to download: {e}")
+                error_msg = f"Failed to download {file_name}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                GLib.idle_add(self._show_error, "Download Failed", error_msg)
+                GLib.idle_add(self._update_status, f"Download failed: {file_name}")
         
         thread = threading.Thread(target=download_in_thread, daemon=True)
         thread.start()
@@ -1322,18 +1339,24 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         """
         self.status_label.set_markup(f"<i>Status: {message}</i>")
     
-    def _show_error(self, message: str) -> None:
+    def _show_error(self, title: str, message: str = None) -> None:
         """Show error dialog.
         
         Args:
-            message: Error message
+            title: Error title (used as message if message is None)
+            message: Optional detailed error message
         """
+        # Support both old and new calling styles
+        if message is None:
+            message = title
+            title = "Error"
+            
         dialog = Gtk.MessageDialog(
             transient_for=self,
             flags=0,
             message_type=Gtk.MessageType.ERROR,
             buttons=Gtk.ButtonsType.OK,
-            text="Error",
+            text=title,
         )
         dialog.format_secondary_text(message)
         dialog.run()
