@@ -4,6 +4,7 @@
 import json
 import logging
 import base64
+import fcntl
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -333,25 +334,47 @@ class Config:
             return None
     
     def save_state(self, state_data: Dict[str, Any]) -> None:
-        """Save sync state.
+        """Save sync state with file locking to prevent corruption.
         
         Args:
             state_data: State data dictionary
         """
+        # Use exclusive lock to prevent concurrent writes
         with open(self.state_path, 'w') as f:
-            json.dump(state_data, f, indent=2)
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                json.dump(state_data, f, indent=2)
+                f.flush()  # Ensure data is written
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        
         # Secure file permissions (owner read/write only)
         self.state_path.chmod(0o600)
     
     def load_state(self) -> Dict[str, Any]:
-        """Load sync state.
+        """Load sync state with file locking.
         
         Returns:
             State data dictionary
         """
         if self.state_path.exists():
-            with open(self.state_path, 'r') as f:
-                return json.load(f)
+            try:
+                with open(self.state_path, 'r') as f:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                    try:
+                        return json.load(f)
+                    finally:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except json.JSONDecodeError as e:
+                logger.error(f"State file corrupted, resetting: {e}")
+                # Return default state if file is corrupted
+                return {
+                    'files': {}, 
+                    'last_sync': None,
+                    'delta_token': None,
+                    'file_cache': {},
+                }
+        
         return {
             'files': {}, 
             'last_sync': None,
