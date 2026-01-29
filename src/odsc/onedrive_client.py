@@ -10,13 +10,18 @@ from functools import wraps
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime, timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import requests
 import certifi
 
 
 logger = logging.getLogger(__name__)
+
+
+class SecurityError(Exception):
+    """Security-related error (path traversal, SSRF, etc)."""
+    pass
 
 
 def retry_on_failure(max_retries: int = 3):
@@ -298,7 +303,15 @@ class OneDriveClient:
             
         Returns:
             Response object
+            
+        Raises:
+            SecurityError: If URL is not from trusted Microsoft domain
         """
+        # Validate URL is from Microsoft Graph API (SSRF protection)
+        parsed = urlparse(url)
+        if parsed.hostname != 'graph.microsoft.com':
+            raise SecurityError(f"Untrusted pagination URL domain: {parsed.hostname}")
+        
         self._ensure_token()
         
         headers = kwargs.pop('headers', {})

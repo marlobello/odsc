@@ -63,6 +63,8 @@ class Config:
         """Save configuration to file."""
         with open(self.config_path, 'w') as f:
             json.dump(self._config, f, indent=2)
+        # Secure file permissions (owner read/write only)
+        self.config_path.chmod(0o600)
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value.
@@ -338,6 +340,8 @@ class Config:
         """
         with open(self.state_path, 'w') as f:
             json.dump(state_data, f, indent=2)
+        # Secure file permissions (owner read/write only)
+        self.state_path.chmod(0o600)
     
     def load_state(self) -> Dict[str, Any]:
         """Load sync state.
