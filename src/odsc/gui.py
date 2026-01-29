@@ -316,8 +316,20 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         error_msg = model.get_value(iter, 8)  # Column 8 is error message
         
         if is_folder:
-            # Don't show status icon for folders
-            cell.set_property('icon-name', None)
+            # For folders, show sync status based on contained files
+            folder_status = self._get_folder_sync_status(model, iter)
+            if folder_status == 'all':
+                # All files in folder are synced
+                cell.set_property('icon-name', 'emblem-default')
+            elif folder_status == 'partial':
+                # Some files in folder are synced
+                cell.set_property('icon-name', 'emblem-synchronizing')
+            elif folder_status == 'none':
+                # No files in folder are synced
+                cell.set_property('icon-name', 'folder')
+            else:
+                # Empty folder or no files
+                cell.set_property('icon-name', None)
         elif error_msg:
             # Red error icon for failed uploads
             cell.set_property('icon-name', 'dialog-error')
@@ -330,6 +342,51 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         else:
             # Overcast cloud icon for online-only files (not downloaded)
             cell.set_property('icon-name', 'weather-overcast')
+    
+    def _get_folder_sync_status(self, model, folder_iter):
+        """Get sync status of all files in a folder (recursively).
+        
+        Args:
+            model: TreeModel
+            folder_iter: TreeIter for the folder
+            
+        Returns:
+            'all' if all files are synced, 'partial' if some are synced, 
+            'none' if no files are synced, 'empty' if no files in folder
+        """
+        total_files = 0
+        synced_files = 0
+        
+        def count_files(parent_iter):
+            nonlocal total_files, synced_files
+            
+            # Iterate through children
+            child_iter = model.iter_children(parent_iter)
+            while child_iter:
+                is_folder = model.get_value(child_iter, 6)
+                
+                if is_folder:
+                    # Recursively count files in subfolder
+                    count_files(child_iter)
+                else:
+                    # Count this file
+                    total_files += 1
+                    is_local = model.get_value(child_iter, 4)
+                    if is_local:
+                        synced_files += 1
+                
+                child_iter = model.iter_next(child_iter)
+        
+        count_files(folder_iter)
+        
+        if total_files == 0:
+            return 'empty'
+        elif synced_files == total_files:
+            return 'all'
+        elif synced_files > 0:
+            return 'partial'
+        else:
+            return 'none'
     
     def _create_log_panel(self) -> None:
         """Create the log panel (initially hidden)."""
@@ -1023,19 +1080,28 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         if not paths:
             return
         
+        files_to_download = []
+        
         for path in paths:
             iter = model.get_iter(path)
-            file_name = model.get_value(iter, 1)
-            file_id = model.get_value(iter, 5)
-            is_local = model.get_value(iter, 4)
             is_folder = model.get_value(iter, 6)
             
-            # Skip folders and files that are already local
-            if is_folder or is_local:
-                continue
-            
-            if file_id:
-                self._download_file(file_id, file_name)
+            if is_folder:
+                # Collect all files in this folder (recursively)
+                files_to_download.extend(self._get_all_files_in_folder(model, iter))
+            else:
+                # Single file
+                file_id = model.get_value(iter, 5)
+                is_local = model.get_value(iter, 4)
+                file_name = model.get_value(iter, 1)
+                
+                # Skip files that are already local
+                if not is_local and file_id:
+                    files_to_download.append((file_id, file_name))
+        
+        # Download all collected files
+        for file_id, file_name in files_to_download:
+            self._download_file(file_id, file_name)
         
         # Update button states after action
         GLib.timeout_add(500, self._update_button_states)
@@ -1048,32 +1114,113 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         if not paths:
             return
         
+        files_to_remove = []
+        
+        for path in paths:
+            iter = model.get_iter(path)
+            is_folder = model.get_value(iter, 6)
+            
+            if is_folder:
+                # Collect all files in this folder (recursively)
+                files_to_remove.extend(self._get_all_files_in_folder_for_removal(model, iter))
+            else:
+                # Single file
+                file_path_str = model.get_value(iter, 7)  # Full path
+                is_local = model.get_value(iter, 4)
+                file_name = model.get_value(iter, 1)
+                
+                # Skip files that aren't local
+                if is_local:
+                    files_to_remove.append((file_path_str, file_name))
+        
+        if not files_to_remove:
+            return
+        
         # Confirm deletion
         confirmed = DialogHelper.show_confirm(
             self,
             "Remove Local Copy?",
-            f"Remove local copy of {len(paths)} selected file(s)?\n\n"
+            f"Remove local copy of {len(files_to_remove)} file(s)?\n\n"
             "Files will remain on OneDrive and can be downloaded again later."
         )
         
         if not confirmed:
             return
         
-        for path in paths:
-            iter = model.get_iter(path)
-            file_name = model.get_value(iter, 1)
-            file_path_str = model.get_value(iter, 7)  # Full path
-            is_local = model.get_value(iter, 4)
-            is_folder = model.get_value(iter, 6)
-            
-            # Skip folders and files that aren't local
-            if is_folder or not is_local:
-                continue
-            
+        # Remove all collected files
+        for file_path_str, file_name in files_to_remove:
             self._remove_local_file(file_path_str, file_name)
         
         # Update button states after action
         GLib.timeout_add(500, self._update_button_states)
+    
+    def _get_all_files_in_folder(self, model, folder_iter):
+        """Get all files in a folder recursively for downloading.
+        
+        Args:
+            model: TreeModel
+            folder_iter: TreeIter for the folder
+            
+        Returns:
+            List of tuples (file_id, file_name) for files that aren't local
+        """
+        files = []
+        
+        def collect_files(parent_iter):
+            child_iter = model.iter_children(parent_iter)
+            while child_iter:
+                is_folder = model.get_value(child_iter, 6)
+                
+                if is_folder:
+                    # Recursively collect from subfolder
+                    collect_files(child_iter)
+                else:
+                    # Check if file needs downloading
+                    file_id = model.get_value(child_iter, 5)
+                    is_local = model.get_value(child_iter, 4)
+                    file_name = model.get_value(child_iter, 1)
+                    
+                    if not is_local and file_id:
+                        files.append((file_id, file_name))
+                
+                child_iter = model.iter_next(child_iter)
+        
+        collect_files(folder_iter)
+        return files
+    
+    def _get_all_files_in_folder_for_removal(self, model, folder_iter):
+        """Get all files in a folder recursively for removal.
+        
+        Args:
+            model: TreeModel
+            folder_iter: TreeIter for the folder
+            
+        Returns:
+            List of tuples (file_path, file_name) for files that are local
+        """
+        files = []
+        
+        def collect_files(parent_iter):
+            child_iter = model.iter_children(parent_iter)
+            while child_iter:
+                is_folder = model.get_value(child_iter, 6)
+                
+                if is_folder:
+                    # Recursively collect from subfolder
+                    collect_files(child_iter)
+                else:
+                    # Check if file is local
+                    file_path_str = model.get_value(child_iter, 7)
+                    is_local = model.get_value(child_iter, 4)
+                    file_name = model.get_value(child_iter, 1)
+                    
+                    if is_local:
+                        files.append((file_path_str, file_name))
+                
+                child_iter = model.iter_next(child_iter)
+        
+        collect_files(folder_iter)
+        return files
     
     def _remove_local_file(self, rel_path: str, file_name: str) -> None:
         """Remove local copy of a file.
