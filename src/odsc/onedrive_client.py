@@ -219,11 +219,12 @@ class OneDriveClient:
         response = self._api_request('GET', '/me')
         return response.json()
     
-    def list_files(self, path: str = "/") -> List[Dict[str, Any]]:
-        """List files in OneDrive directory.
+    def list_files(self, path: str = "/", paginate: bool = True) -> List[Dict[str, Any]]:
+        """List files in OneDrive directory with pagination support.
         
         Args:
             path: Directory path (default: root)
+            paginate: Whether to follow pagination links (default: True)
             
         Returns:
             List of file/folder metadata
@@ -235,9 +236,109 @@ class OneDriveClient:
             path = path.strip("/")
             endpoint = f"/me/drive/root:/{path}:/children"
         
-        response = self._api_request('GET', endpoint)
-        data = response.json()
-        return data.get('value', [])
+        all_items = []
+        url = None  # Will be set to full URL for pagination
+        
+        while True:
+            if url:
+                # Use full URL for paginated requests
+                response = self._api_request_url(url)
+            else:
+                # Use endpoint for first request
+                response = self._api_request('GET', endpoint)
+            
+            data = response.json()
+            items = data.get('value', [])
+            all_items.extend(items)
+            
+            # Check for pagination
+            next_link = data.get('@odata.nextLink')
+            if not paginate or not next_link:
+                break
+            
+            url = next_link
+            logger.debug(f"Following pagination link, fetched {len(all_items)} items so far")
+        
+        logger.info(f"Listed {len(all_items)} items from {path}")
+        return all_items
+    
+    def _api_request_url(self, url: str, **kwargs) -> requests.Response:
+        """Make authenticated API request to a full URL (for pagination).
+        
+        Args:
+            url: Full URL including domain
+            **kwargs: Additional request arguments
+            
+        Returns:
+            Response object
+        """
+        self._ensure_token()
+        
+        headers = kwargs.pop('headers', {})
+        headers['Authorization'] = f"Bearer {self.token_data['access_token']}"
+        
+        response = self._session.request('GET', url, headers=headers, **kwargs)
+        response.raise_for_status()
+        return response
+    
+    def get_delta(self, delta_token: Optional[str] = None) -> tuple[List[Dict[str, Any]], str]:
+        """Get changes since last sync using delta query.
+        
+        This is much more efficient than list_all_files() for incremental syncs.
+        The delta query returns only items that have changed since the last query.
+        
+        Args:
+            delta_token: Token from previous delta query (None for initial sync)
+            
+        Returns:
+            Tuple of (list of changed items, new delta token)
+            
+        Note:
+            - Initial call (delta_token=None) returns all items
+            - Subsequent calls return only changes since last delta_token
+            - Store and reuse the returned delta_token for incremental syncs
+        """
+        if delta_token:
+            # Resume from saved position using full deltaLink URL
+            url = delta_token
+            logger.info("Fetching incremental changes using delta query")
+        else:
+            # Start new delta query from root
+            url = f"{self.API_BASE}/me/drive/root/delta"
+            logger.info("Starting initial delta query (will fetch all items)")
+        
+        all_changes = []
+        
+        while True:
+            if url.startswith('http'):
+                # Full URL (pagination or deltaLink)
+                response = self._api_request_url(url)
+            else:
+                # Endpoint path
+                response = self._api_request('GET', url)
+            
+            data = response.json()
+            items = data.get('value', [])
+            all_changes.extend(items)
+            
+            # Check for next page
+            next_link = data.get('@odata.nextLink')
+            if next_link:
+                url = next_link
+                logger.debug(f"Following delta pagination, {len(all_changes)} changes so far")
+                continue
+            
+            # Check for delta link (save this for next query)
+            delta_link = data.get('@odata.deltaLink')
+            if delta_link:
+                logger.info(f"Delta query complete: {len(all_changes)} items")
+                return all_changes, delta_link
+            
+            # Should not reach here, but handle gracefully
+            logger.warning("Delta query ended without deltaLink")
+            break
+        
+        return all_changes, None
     
     def list_all_files(self, path: str = "/") -> List[Dict[str, Any]]:
         """Recursively list all files and folders in OneDrive.
@@ -247,6 +348,9 @@ class OneDriveClient:
             
         Returns:
             List of all file and folder metadata
+            
+        Note:
+            For large accounts, consider using get_delta() instead for better performance.
         """
         all_items = []
         items = self.list_files(path)

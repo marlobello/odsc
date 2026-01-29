@@ -292,7 +292,7 @@ class SyncDaemon:
         return elapsed >= self.config.sync_interval
     
     def _do_periodic_sync(self) -> None:
-        """Perform periodic two-way sync of all files."""
+        """Perform periodic two-way sync of all files using delta query."""
         logger.info("Starting periodic two-way sync...")
         
         sync_dir = self.config.sync_directory
@@ -300,48 +300,118 @@ class SyncDaemon:
         # Ensure 'files' key exists in state
         if 'files' not in self.state:
             self.state['files'] = {}
+        if 'file_cache' not in self.state:
+            self.state['file_cache'] = {}
         
-        # Get all files from OneDrive
-        logger.info("Fetching remote file list...")
+        # Get delta token from state (None for initial sync)
+        delta_token = self.state.get('delta_token')
+        
+        # Fetch changes using delta query (much faster than list_all_files)
+        logger.info("Fetching changes from OneDrive using delta query...")
         try:
-            remote_items = self.client.list_all_files()
+            if delta_token:
+                # Incremental sync - only changed files
+                changes, new_delta_token = self.client.get_delta(delta_token)
+                logger.info(f"Incremental sync: {len(changes)} changes detected")
+            else:
+                # Initial sync - all files
+                changes, new_delta_token = self.client.get_delta(None)
+                logger.info(f"Initial sync: {len(changes)} total items")
+            
+            # Store new delta token for next sync
+            self.state['delta_token'] = new_delta_token
+            
         except Exception as e:
-            logger.error(f"Failed to fetch remote files: {e}", exc_info=True)
+            logger.error(f"Failed to fetch changes: {e}", exc_info=True)
+            # On error, fall back to full sync next time
+            self.state['delta_token'] = None
             return
         
-        # Build map of remote files (excluding folders)
+        # Process changes and update cache
         remote_files = {}
-        for item in remote_items:
-            if 'folder' not in item:
+        for item in changes:
+            # Check for deletions
+            if item.get('deleted'):
+                # Item was deleted on OneDrive
+                item_id = item['id']
+                # Find and remove from cache by ID
+                for path, cached_item in list(self.state['file_cache'].items()):
+                    if cached_item.get('id') == item_id:
+                        logger.info(f"Item deleted on OneDrive: {path}")
+                        # Handle deletion
+                        if path in self.state.get('files', {}):
+                            local_path = sync_dir / path
+                            if local_path.exists():
+                                self._move_to_recycle_bin(local_path, path)
+                            del self.state['files'][path]
+                        del self.state['file_cache'][path]
+                        break
+                continue
+            
+            # Skip folders for file processing
+            if 'folder' in item:
+                # Update folder in cache but don't process as file
                 try:
-                    # Extract and sanitize path
                     parent_path = item.get('parentReference', {}).get('path', '')
                     name = item.get('name', '')
                     
-                    # Sanitize OneDrive path
                     if parent_path:
                         safe_parent = self._sanitize_onedrive_path(parent_path)
                         full_path = str(Path(safe_parent) / name) if safe_parent else name
                     else:
                         full_path = name
                     
-                    # Validate it's within sync directory
-                    validated_path = self._validate_sync_path(full_path, sync_dir)
+                    # Validate path
+                    self._validate_sync_path(full_path, sync_dir)
                     
-                    remote_files[full_path] = {
+                    # Update cache
+                    self.state['file_cache'][full_path] = {
                         'id': item['id'],
-                        'size': item.get('size', 0),
-                        'eTag': item.get('eTag', ''),
-                        'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
+                        'is_folder': True,
                     }
-                except SecurityError as e:
-                    logger.warning(f"Skipping unsafe remote path: {e}")
-                    continue
-                except Exception as e:
-                    logger.warning(f"Error processing remote item: {e}")
-                    continue
+                except (SecurityError, Exception) as e:
+                    logger.warning(f"Skipping unsafe folder: {e}")
+                continue
+            
+            # Process files
+            try:
+                # Extract and sanitize path
+                parent_path = item.get('parentReference', {}).get('path', '')
+                name = item.get('name', '')
+                
+                # Sanitize OneDrive path
+                if parent_path:
+                    safe_parent = self._sanitize_onedrive_path(parent_path)
+                    full_path = str(Path(safe_parent) / name) if safe_parent else name
+                else:
+                    full_path = name
+                
+                # Validate it's within sync directory
+                validated_path = self._validate_sync_path(full_path, sync_dir)
+                
+                # Update cache with latest metadata
+                self.state['file_cache'][full_path] = {
+                    'id': item['id'],
+                    'size': item.get('size', 0),
+                    'eTag': item.get('eTag', ''),
+                    'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
+                    'is_folder': False,
+                }
+                
+                remote_files[full_path] = {
+                    'id': item['id'],
+                    'size': item.get('size', 0),
+                    'eTag': item.get('eTag', ''),
+                    'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
+                }
+            except SecurityError as e:
+                logger.warning(f"Skipping unsafe remote path: {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"Error processing remote item: {e}")
+                continue
         
-        logger.info(f"Found {len(remote_files)} remote files")
+        logger.info(f"Processed {len(remote_files)} remote files from delta")
         
         # Scan local directory
         local_files = {}

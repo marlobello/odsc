@@ -988,7 +988,7 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         self._load_remote_files()
     
     def _load_remote_files(self) -> None:
-        """Load files from OneDrive."""
+        """Load files from OneDrive using delta query and caching."""
         if not self.client:
             self._show_error("Not authenticated. Please authenticate first.")
             return
@@ -997,11 +997,91 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         
         def load_in_thread():
             try:
-                files = self.client.list_all_files()
+                # Load state to get delta token and cache
+                state = self.config.load_state()
+                delta_token = state.get('delta_token')
+                file_cache = state.get('file_cache', {})
+                
+                if delta_token and file_cache:
+                    # Use incremental sync
+                    logger.info("Using delta query for incremental refresh")
+                    GLib.idle_add(self._update_status, "Checking for changes...")
+                    
+                    changes, new_delta_token = self.client.get_delta(delta_token)
+                    
+                    # Apply changes to cache
+                    for item in changes:
+                        if item.get('deleted'):
+                            # Remove from cache
+                            item_id = item['id']
+                            for path in list(file_cache.keys()):
+                                if file_cache[path].get('id') == item_id:
+                                    del file_cache[path]
+                                    break
+                        else:
+                            # Update or add to cache
+                            try:
+                                parent_path = item.get('parentReference', {}).get('path', '')
+                                name = item.get('name', '')
+                                
+                                if parent_path:
+                                    safe_parent = self._sanitize_onedrive_path(parent_path)
+                                    full_path = str(Path(safe_parent) / name) if safe_parent else name
+                                else:
+                                    full_path = name
+                                
+                                file_cache[full_path] = item
+                            except Exception as e:
+                                logger.warning(f"Error processing change: {e}")
+                    
+                    # Update state with new token and cache
+                    state['delta_token'] = new_delta_token
+                    state['file_cache'] = file_cache
+                    self.config.save_state(state)
+                    
+                    # Build file list from cache
+                    files = list(file_cache.values())
+                    logger.info(f"Delta refresh complete: {len(changes)} changes, {len(files)} total items")
+                else:
+                    # Initial load - fetch all files
+                    logger.info("Initial load: fetching all files")
+                    GLib.idle_add(self._update_status, "Fetching all files (first time)...")
+                    
+                    changes, new_delta_token = self.client.get_delta(None)
+                    
+                    # Build cache from initial load
+                    file_cache = {}
+                    for item in changes:
+                        if not item.get('deleted'):
+                            try:
+                                parent_path = item.get('parentReference', {}).get('path', '')
+                                name = item.get('name', '')
+                                
+                                if parent_path:
+                                    safe_parent = self._sanitize_onedrive_path(parent_path)
+                                    full_path = str(Path(safe_parent) / name) if safe_parent else name
+                                else:
+                                    full_path = name
+                                
+                                file_cache[full_path] = item
+                            except Exception as e:
+                                logger.warning(f"Error processing item: {e}")
+                    
+                    # Save initial state
+                    state['delta_token'] = new_delta_token
+                    state['file_cache'] = file_cache
+                    self.config.save_state(state)
+                    
+                    files = changes
+                    logger.info(f"Initial load complete: {len(files)} items")
+                
                 GLib.idle_add(self._update_file_list, files)
+                GLib.idle_add(self._update_status, f"Loaded {len(files)} items")
+                
             except Exception as e:
-                logger.error(f"Failed to load files: {e}")
-                GLib.idle_add(self._show_error, f"Failed to load files: {e}")
+                logger.error(f"Failed to load files: {e}", exc_info=True)
+                GLib.idle_add(self._show_error, "Failed to load files", str(e))
+                GLib.idle_add(self._update_status, "Failed to load files")
         
         thread = threading.Thread(target=load_in_thread, daemon=True)
         thread.start()
@@ -1095,6 +1175,9 @@ class OneDriveGUI(Gtk.ApplicationWindow):
         """
         self.remote_files = files
         self.file_store.clear()
+        
+        # Update status
+        self._update_status(f"Processing {len(files)} items...")
         
         sync_dir = self.config.sync_directory
         

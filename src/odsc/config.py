@@ -346,4 +346,9 @@ class Config:
         if self.state_path.exists():
             with open(self.state_path, 'r') as f:
                 return json.load(f)
-        return {'files': {}, 'last_sync': None}
+        return {
+            'files': {}, 
+            'last_sync': None,
+            'delta_token': None,  # For incremental OneDrive sync
+            'file_cache': {},  # Cache of remote file metadata
+        }
