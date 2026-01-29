@@ -579,6 +579,10 @@ class SyncDaemon:
                 self._move_to_recycle_bin(local_path, folder_path)
                 # Remove from local_folders so we don't try to upload it
                 del local_folders[folder_path]
+                # Remove from cache so GUI doesn't show it
+                if folder_path in self.state['file_cache']:
+                    del self.state['file_cache'][folder_path]
+                    logger.debug(f"Removed {folder_path} from cache")
             except Exception as e:
                 logger.error(f"Failed to remove local folder {folder_path}: {e}")
         
