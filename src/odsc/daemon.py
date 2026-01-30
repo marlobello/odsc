@@ -256,6 +256,10 @@ class SyncDaemon:
         # Initialize state
         self._ensure_state_initialized()
         
+        # Track items deleted from OneDrive in this sync cycle
+        # This prevents re-uploading them if local deletion failed
+        self._deleted_from_remote = set()
+        
         # Fetch and process changes from OneDrive
         remote_files = self._fetch_and_process_remote_changes(sync_dir)
         if remote_files is None:
@@ -341,10 +345,17 @@ class SyncDaemon:
                 item_type = "folder" if is_folder else "file"
                 logger.info(f"{item_type.capitalize()} deleted on OneDrive: {path}")
                 
+                # Track this deletion to prevent re-upload
+                if hasattr(self, '_deleted_from_remote'):
+                    self._deleted_from_remote.add(path)
+                    logger.debug(f"Added {path} to deleted tracking set")
+                
                 # Delete local file/folder if it exists
                 local_path = self.config.sync_directory / path
                 if local_path.exists():
                     self._move_to_recycle_bin(local_path, path)
+                else:
+                    logger.debug(f"Local path doesn't exist (may have been deleted already): {path}")
                 
                 # Remove from cache and state
                 self._remove_from_cache(path)
@@ -593,9 +604,17 @@ class SyncDaemon:
                 logger.error(f"Failed to remove local folder {folder_path}: {e}")
     
     def _upload_new_local_folders(self, local_folders: Dict, all_remote_folders: Dict) -> None:
-        """Upload new local folders to OneDrive."""
+        """Upload new local folders to OneDrive.
+        
+        Skips folders that were deleted from OneDrive in this sync cycle.
+        """
         for folder_path in local_folders:
             if folder_path not in all_remote_folders:
+                # Check if this folder was just deleted from OneDrive
+                if hasattr(self, '_deleted_from_remote') and folder_path in self._deleted_from_remote:
+                    logger.info(f"Skipping upload of {folder_path} - was deleted from OneDrive in this sync")
+                    continue
+                
                 try:
                     logger.info(f"Creating folder on OneDrive: {folder_path}")
                     metadata = self.client.create_folder(folder_path)
@@ -678,6 +697,11 @@ class SyncDaemon:
         """
         # Case 1: File only exists locally (new local file)
         if local_info and not remote_info:
+            # Check if this file was just deleted from OneDrive in this sync
+            if hasattr(self, '_deleted_from_remote') and rel_path in self._deleted_from_remote:
+                logger.info(f"{rel_path} was deleted from OneDrive in this sync, moving to recycle bin")
+                return 'recycle'
+            
             if not state_entry:
                 # Check if file is in cache (was on OneDrive before)
                 # This handles case where file was deleted from OneDrive but not in state
