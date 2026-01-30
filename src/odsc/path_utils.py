@@ -3,7 +3,7 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +11,24 @@ logger = logging.getLogger(__name__)
 class SecurityError(Exception):
     """Raised when a security violation is detected."""
     pass
+
+
+def extract_item_path(item: Dict[str, Any]) -> str:
+    """Extract and sanitize full path from OneDrive item.
+    
+    Args:
+        item: OneDrive item dictionary with 'name' and 'parentReference'
+        
+    Returns:
+        Sanitized relative path (e.g., "Documents/file.txt")
+    """
+    parent_path = item.get('parentReference', {}).get('path', '')
+    name = item.get('name', '')
+    
+    if parent_path:
+        safe_parent = sanitize_onedrive_path(parent_path)
+        return str(Path(safe_parent) / name) if safe_parent else name
+    return name
 
 
 def sanitize_onedrive_path(raw_path: str) -> str:

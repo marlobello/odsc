@@ -17,7 +17,7 @@ from send2trash import send2trash
 from .config import Config
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
-from .path_utils import sanitize_onedrive_path, validate_sync_path, SecurityError
+from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
 
 logger = logging.getLogger(__name__)
 
@@ -194,22 +194,6 @@ class SyncDaemon:
             # Wait for sync interval
             time.sleep(self.config.sync_interval)
     
-    def _extract_item_path(self, item: Dict[str, Any]) -> str:
-        """Extract and sanitize full path from OneDrive item.
-        
-        Args:
-            item: OneDrive item dictionary
-            
-        Returns:
-            Sanitized relative path
-        """
-        parent_path = item.get('parentReference', {}).get('path', '')
-        name = item.get('name', '')
-        
-        if parent_path:
-            safe_parent = sanitize_onedrive_path(parent_path)
-            return str(Path(safe_parent) / name) if safe_parent else name
-        return name
     
     def _should_do_periodic_sync(self) -> bool:
         """Check if periodic sync should run.
@@ -429,7 +413,7 @@ class SyncDaemon:
                 logger.debug("Skipping drive root object")
                 return
             
-            full_path = self._extract_item_path(item)
+            full_path = extract_item_path(item)
             validate_sync_path(full_path, sync_dir)
             self.state['file_cache'][full_path] = item
         except (SecurityError, Exception) as e:
@@ -442,7 +426,7 @@ class SyncDaemon:
             Dict with 'path' and 'metadata' keys, or None if error
         """
         try:
-            full_path = self._extract_item_path(item)
+            full_path = extract_item_path(item)
             validate_sync_path(full_path, sync_dir)
             
             metadata = {
@@ -637,9 +621,19 @@ class SyncDaemon:
                                            all_remote_folders: Dict) -> None:
         """Delete local folders that were removed from OneDrive.
         
+        This is a safety net for folders that were deleted from OneDrive in 
+        PREVIOUS sync cycles where deletion failed or was incomplete.
+        
+        For current-sync deletions, _verify_and_retry_deletions() handles them.
+        This method catches historical edge cases where:
+        1. Folder was deleted from OneDrive in a previous sync
+        2. Local deletion failed at that time
+        3. Folder is still in cache (wasn't removed for some reason)
+        4. Daemon was restarted (lost _deleted_from_remote tracking)
+        
         Only deletes folders that:
         1. Exist locally
-        2. Were previously synced (exist in cache)
+        2. Are in cache (were synced before)
         3. No longer exist on OneDrive (deleted remotely)
         """
         folders_to_delete = []
@@ -746,6 +740,8 @@ class SyncDaemon:
                                remote_info: Optional[Dict], state_entry: Dict) -> str:
         """Determine what sync action to take for a file.
         
+        Orchestrates sync decision by delegating to scenario-specific handlers.
+        
         Args:
             rel_path: Relative file path
             local_info: Local file info (or None if doesn't exist locally)
@@ -755,93 +751,129 @@ class SyncDaemon:
         Returns:
             Action: 'upload', 'download', 'conflict', 'recycle', or 'skip'
         """
-        # Case 1: File only exists locally (new local file)
-        if local_info and not remote_info:
-            # Check if this file was just deleted from OneDrive in this sync
-            if hasattr(self, '_deleted_from_remote') and rel_path in self._deleted_from_remote:
-                logger.info(f"{rel_path} was deleted from OneDrive in this sync, moving to recycle bin")
-                return 'recycle'
-            
-            if not state_entry:
-                # Check if file is in cache (was on OneDrive before)
-                # This handles case where file was deleted from OneDrive but not in state
-                if rel_path in self.state.get('file_cache', {}):
-                    logger.info(f"{rel_path} was deleted remotely (found in cache), moving to recycle bin")
-                    return 'recycle'
-                # Never synced before, upload it
-                return 'upload'
-            elif state_entry.get('eTag'):
-                # Was synced before but now missing remotely (deleted remotely)
-                logger.info(f"{rel_path} was deleted remotely, moving to recycle bin")
-                return 'recycle'
-            else:
-                return 'upload'
+        # Check if file was deleted remotely in this sync cycle
+        if hasattr(self, '_deleted_from_remote') and rel_path in self._deleted_from_remote:
+            logger.info(f"{rel_path} was deleted from OneDrive in this sync, moving to recycle bin")
+            return 'recycle'
         
-        # Case 2: File only exists remotely (new remote file or deleted locally)
-        if remote_info and not local_info:
-            if not state_entry:
-                # Never synced before - user must manually download
-                logger.debug(f"{rel_path} is new on OneDrive, awaiting user download")
-                return 'skip'
-            elif state_entry.get('downloaded') and state_entry.get('mtime'):
-                # Was downloaded before but now deleted locally (user deleted)
-                logger.info(f"{rel_path} was deleted locally, keeping deleted")
-                return 'skip'
-            elif state_entry.get('eTag'):
-                # Was synced/uploaded but deleted locally (user deleted)
-                logger.info(f"{rel_path} was deleted locally, keeping deleted")
-                return 'skip'
-            else:
-                # No clear state, skip (require manual download)
-                return 'skip'
+        # Delegate to scenario-specific handlers
+        if self._is_local_only(local_info, remote_info):
+            return self._handle_local_only_file(rel_path, state_entry)
         
-        # Case 3: File exists both locally and remotely
-        if local_info and remote_info:
-            # Check if we've synced this file before
-            if not state_entry:
-                # No sync state - this shouldn't happen in normal flow
-                # Could be user manually added file that already exists remotely
-                if local_info['size'] == remote_info['size']:
-                    # Assume same, record state
-                    logger.info(f"{rel_path} exists both places with same size, assuming synced")
-                    return 'skip'
-                else:
-                    # Different sizes, potential conflict
-                    return 'conflict'
-            
-            # Only sync if file was explicitly downloaded by user or uploaded by us
-            if not state_entry.get('downloaded'):
-                # User never downloaded this, skip syncing
-                logger.debug(f"{rel_path} not marked as downloaded, skipping sync")
-                return 'skip'
-            
-            # Check if local file changed since last sync
-            local_changed = (
-                state_entry.get('mtime', 0) != local_info['mtime'] or
-                state_entry.get('size', 0) != local_info['size']
-            )
-            
-            # Check if remote file changed since last sync
-            remote_changed = (
-                state_entry.get('eTag', '') != remote_info['eTag'] or
-                state_entry.get('remote_modified', '') != remote_info['lastModifiedDateTime']
-            )
-            
-            if local_changed and remote_changed:
-                # Both changed - conflict!
-                logger.warning(f"Both local and remote changed: {rel_path}")
-                return 'conflict'
-            elif local_changed:
-                # Only local changed - upload
-                return 'upload'
-            elif remote_changed:
-                # Only remote changed - download
-                return 'download'
-            else:
-                # Neither changed
-                return 'skip'
+        if self._is_remote_only(local_info, remote_info):
+            return self._handle_remote_only_file(rel_path, state_entry)
+        
+        if self._exists_both_places(local_info, remote_info):
+            return self._handle_file_exists_both(rel_path, local_info, remote_info, state_entry)
         
         return 'skip'
+    
+    def _is_local_only(self, local_info: Optional[Dict], remote_info: Optional[Dict]) -> bool:
+        """Check if file exists only locally."""
+        return local_info is not None and remote_info is None
+    
+    def _is_remote_only(self, local_info: Optional[Dict], remote_info: Optional[Dict]) -> bool:
+        """Check if file exists only remotely."""
+        return remote_info is not None and local_info is None
+    
+    def _exists_both_places(self, local_info: Optional[Dict], remote_info: Optional[Dict]) -> bool:
+        """Check if file exists both locally and remotely."""
+        return local_info is not None and remote_info is not None
+    
+    def _handle_local_only_file(self, rel_path: str, state_entry: Dict) -> str:
+        """Handle file that only exists locally.
+        
+        Returns:
+            'upload' if new file, 'recycle' if was deleted remotely
+        """
+        if not state_entry:
+            # Check if file is in cache (was on OneDrive before deletion)
+            if rel_path in self.state.get('file_cache', {}):
+                logger.info(f"{rel_path} was deleted remotely (found in cache), moving to recycle bin")
+                return 'recycle'
+            # Never synced before, upload it
+            return 'upload'
+        
+        if state_entry.get('eTag'):
+            # Was synced before but now missing remotely (deleted remotely)
+            logger.info(f"{rel_path} was deleted remotely, moving to recycle bin")
+            return 'recycle'
+        
+        return 'upload'
+    
+    def _handle_remote_only_file(self, rel_path: str, state_entry: Dict) -> str:
+        """Handle file that only exists remotely.
+        
+        Returns:
+            'skip' - either new remote file (needs manual download) or deleted locally (respect deletion)
+        """
+        if not state_entry:
+            # Never synced before - user must manually download
+            logger.debug(f"{rel_path} is new on OneDrive, awaiting user download")
+            return 'skip'
+        
+        if state_entry.get('downloaded') or state_entry.get('eTag'):
+            # Was synced before but now deleted locally (user deleted)
+            logger.info(f"{rel_path} was deleted locally, keeping deleted")
+            return 'skip'
+        
+        # No clear state, skip (require manual download)
+        return 'skip'
+    
+    def _handle_file_exists_both(self, rel_path: str, local_info: Dict, 
+                                 remote_info: Dict, state_entry: Dict) -> str:
+        """Handle file that exists both locally and remotely.
+        
+        Returns:
+            'upload', 'download', 'conflict', or 'skip'
+        """
+        if not state_entry:
+            # No sync state - handle gracefully
+            return self._handle_untracked_file(rel_path, local_info, remote_info)
+        
+        # Only sync if file was explicitly downloaded by user or uploaded by us
+        if not state_entry.get('downloaded'):
+            logger.debug(f"{rel_path} not marked as downloaded, skipping sync")
+            return 'skip'
+        
+        # Determine what changed
+        local_changed = self._is_local_modified(local_info, state_entry)
+        remote_changed = self._is_remote_modified(remote_info, state_entry)
+        
+        # Decide action based on what changed
+        if local_changed and remote_changed:
+            logger.warning(f"Both local and remote changed: {rel_path}")
+            return 'conflict'
+        elif local_changed:
+            return 'upload'
+        elif remote_changed:
+            return 'download'
+        else:
+            return 'skip'
+    
+    def _handle_untracked_file(self, rel_path: str, local_info: Dict, remote_info: Dict) -> str:
+        """Handle file that exists both places but has no sync state.
+        
+        Could happen if user manually added file that already exists remotely.
+        
+        Returns:
+            'skip' if same size, 'conflict' if different
+        """
+        if local_info['size'] == remote_info['size']:
+            logger.info(f"{rel_path} exists both places with same size, assuming synced")
+            return 'skip'
+        else:
+            return 'conflict'
+    
+    def _is_local_modified(self, local_info: Dict, state_entry: Dict) -> bool:
+        """Check if local file has been modified since last sync."""
+        return (state_entry.get('mtime', 0) != local_info['mtime'] or
+                state_entry.get('size', 0) != local_info['size'])
+    
+    def _is_remote_modified(self, remote_info: Dict, state_entry: Dict) -> bool:
+        """Check if remote file has been modified since last sync."""
+        return (state_entry.get('eTag', '') != remote_info['eTag'] or
+                state_entry.get('remote_modified', '') != remote_info['lastModifiedDateTime'])
     
     def _sync_file(self, path: Path) -> None:
         """Sync a single file to OneDrive.
