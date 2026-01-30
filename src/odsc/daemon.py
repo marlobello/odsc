@@ -19,6 +19,15 @@ from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
 from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
 
+# Try to import system tray (optional - may not be available in headless environments)
+try:
+    from .system_tray import SystemTrayIndicator
+    SYSTEM_TRAY_AVAILABLE = True
+except ImportError:
+    SYSTEM_TRAY_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("System tray not available (missing dependencies)")
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,6 +96,8 @@ class SyncDaemon:
         self.event_handler: Optional[SyncEventHandler] = None
         self._running = False
         self._sync_thread: Optional[threading.Thread] = None
+        self.system_tray: Optional['SystemTrayIndicator'] = None
+        self._tray_thread: Optional[threading.Thread] = None
         
         # Load sync state
         self.state = self.config.load_state()
@@ -138,6 +149,13 @@ class SyncDaemon:
         sync_dir = self.config.sync_directory
         sync_dir.mkdir(parents=True, exist_ok=True)
         
+        # Start system tray indicator if available
+        if SYSTEM_TRAY_AVAILABLE and os.environ.get('DISPLAY'):
+            try:
+                self._start_system_tray()
+            except Exception as e:
+                logger.warning(f"Could not start system tray: {e}")
+        
         # Set up file system monitoring
         self.event_handler = SyncEventHandler(self)
         self.observer = Observer()
@@ -161,6 +179,13 @@ class SyncDaemon:
         logger.info("Stopping sync daemon...")
         self._running = False
         
+        # Stop system tray
+        if self.system_tray:
+            try:
+                self.system_tray.quit()
+            except Exception as e:
+                logger.debug(f"Error stopping system tray: {e}")
+        
         if self.observer:
             self.observer.stop()
             self.observer.join()
@@ -169,6 +194,19 @@ class SyncDaemon:
             self._sync_thread.join(timeout=5)
         
         logger.info("Sync daemon stopped")
+    
+    def _start_system_tray(self):
+        """Start the system tray indicator in a separate thread."""
+        def run_tray():
+            try:
+                self.system_tray = SystemTrayIndicator(daemon=self)
+                self.system_tray.run()  # Blocking GTK main loop
+            except Exception as e:
+                logger.error(f"System tray error: {e}", exc_info=True)
+        
+        self._tray_thread = threading.Thread(target=run_tray, daemon=True)
+        self._tray_thread.start()
+        logger.info("System tray indicator started")
     
     def _sync_loop(self) -> None:
         """Main sync loop (runs periodically)."""

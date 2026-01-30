@@ -7,6 +7,7 @@ A lightweight Linux sync client for Microsoft OneDrive that runs as a background
 - **Background Sync**: Automatically syncs files between local directory and OneDrive
 - **Real-time Monitoring**: Detects file changes instantly using filesystem events
 - **Native GTK Interface**: Clean GNOME-style GUI for managing files
+- **System Tray Indicator**: Quick access menu in taskbar when daemon is running
 - **Selective Sync**: Choose which files to download and keep in sync
 - **Secure Authentication**: OAuth2 with encrypted token storage
 - **Force Sync**: Manual sync trigger via GUI menu
@@ -88,6 +89,15 @@ odsc-daemon
 
 ### Manual Sync Trigger
 - Click **Settings → Force Sync Now** to trigger immediate sync
+
+### System Tray Indicator
+When the sync daemon is running, an icon appears in the GNOME taskbar with quick access to:
+- **Live Status**: Shows current sync status
+- **Open GUI**: Launch or focus the main application window
+- **Stop Service**: Gracefully stop the sync daemon
+- **About**: Link to the GitHub repository
+
+> **Note:** System tray requires a graphical environment. Headless/server installations run without the tray icon.
 
 ### Safety Features
 - **Remote deletions** → Local files moved to trash (not permanently deleted)
