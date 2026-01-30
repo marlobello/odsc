@@ -19,10 +19,6 @@ def main():
     import gi
     gi.require_version('Gtk', '3.0')
     from gi.repository import Gtk, Gio, GLib
-    from .splash import SplashScreen
-    
-    splash_window = None
-    main_window_ref = [None]  # Use list to allow modification in nested function
     
     class OneDriveApplication(Gtk.Application):
         """GTK Application for OneDrive Sync Client."""
@@ -36,34 +32,9 @@ def main():
         
         def do_activate(self):
             """Activate the application."""
-            nonlocal splash_window, main_window_ref
-            
             if not self.window:
-                # Show splash screen immediately
-                splash_window = SplashScreen()
-                splash_window.show_all()
-                
-                # After 2 seconds, close splash and create main window
-                def create_main():
-                    try:
-                        # Close splash
-                        if splash_window:
-                            splash_window.close_splash()
-                        
-                        # Create and show main window
-                        self.window = OneDriveGUI(self)
-                        self.window.show_all()
-                        main_window_ref[0] = self.window
-                        
-                    except Exception as e:
-                        import traceback
-                        print(f"Error creating main window: {e}")
-                        traceback.print_exc()
-                    
-                    return False
-                
-                GLib.timeout_add(2000, create_main)
-                
+                self.window = OneDriveGUI(self)
+                self.window.show_all()
             else:
                 # Window already exists - bring it to focus
                 self.window.show_all()
