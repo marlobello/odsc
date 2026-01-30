@@ -35,7 +35,12 @@ def main():
             if not self.window:
                 self.window = OneDriveGUI(self)
                 self.window.show_all()
-            self.window.present()
+            else:
+                # Window already exists - bring it to focus
+                self.window.show_all()
+                self.window.deiconify()  # Un-minimize if minimized
+                self.window.present_with_time(Gtk.get_current_event_time())  # More aggressive than present()
+                self.window.get_window().focus(Gtk.get_current_event_time())  # Focus the GdkWindow
     
     app = OneDriveApplication()
     app.run(None)
