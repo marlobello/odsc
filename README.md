@@ -127,10 +127,7 @@ Try one of these:
 # Option 1: Search for it
 # Press Super key, type "OneDrive"
 
-# Option 2: Refresh desktop entries
-./refresh-desktop-entry.sh
-
-# Option 3: Launch from terminal
+# Option 2: Launch from terminal
 odsc-gui
 ```
 
