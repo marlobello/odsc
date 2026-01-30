@@ -31,23 +31,71 @@ class SystemTrayIndicator:
     
     def _setup_indicator(self):
         """Setup the AppIndicator."""
-        # Find icon path
-        icon_path = self._find_icon_path()
+        # Try to use icon from theme first, fall back to icon path
+        icon_theme_name = self._get_icon_theme_name()
         
-        # Create AppIndicator
-        self.indicator = AppIndicator3.Indicator.new(
-            "odsc-sync",
-            icon_path if icon_path else "cloud-symbolic",
-            AppIndicator3.IndicatorCategory.APPLICATION_STATUS
-        )
+        if icon_theme_name:
+            # Icon is installed in theme, use its name
+            self.indicator = AppIndicator3.Indicator.new(
+                "odsc-sync",
+                icon_theme_name,
+                AppIndicator3.IndicatorCategory.APPLICATION_STATUS
+            )
+        else:
+            # Fall back to direct path (will be scaled by theme)
+            icon_path = self._find_icon_path()
+            self.indicator = AppIndicator3.Indicator.new(
+                "odsc-sync",
+                icon_path if icon_path else "cloud-symbolic",
+                AppIndicator3.IndicatorCategory.APPLICATION_STATUS
+            )
+        
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
         self.indicator.set_title("OneDrive Sync Client")
+        
+        # Try to set a custom icon path for better scaling
+        icon_dir = self._find_icon_directory()
+        if icon_dir:
+            self.indicator.set_icon_theme_path(str(icon_dir))
         
         # Create menu
         menu = self._create_menu()
         self.indicator.set_menu(menu)
         
         logger.info("System tray indicator initialized")
+    
+    def _get_icon_theme_name(self) -> Optional[str]:
+        """Check if ODSC icon is available in icon theme.
+        
+        Returns:
+            Icon theme name if available, None otherwise
+        """
+        # Check if 'odsc' icon is available in current theme
+        icon_theme = Gtk.IconTheme.get_default()
+        if icon_theme and icon_theme.has_icon('odsc'):
+            logger.debug("Using 'odsc' from icon theme")
+            return 'odsc'
+        return None
+    
+    def _find_icon_directory(self) -> Optional[Path]:
+        """Find directory containing ODSC icon files.
+        
+        Returns:
+            Path to icon directory or None
+        """
+        # Check common icon directories
+        possible_dirs = [
+            Path(__file__).parent.parent.parent / "desktop",
+            Path("/usr/share/pixmaps"),
+            Path.home() / ".local/share/icons",
+        ]
+        
+        for icon_dir in possible_dirs:
+            if (icon_dir / "odsc.png").exists() or (icon_dir / "odsc.svg").exists():
+                logger.debug(f"Found icon directory: {icon_dir}")
+                return icon_dir
+        
+        return None
     
     def _find_icon_path(self) -> Optional[str]:
         """Find the ODSC icon file.
@@ -136,16 +184,44 @@ class SystemTrayIndicator:
     def _on_open_gui(self, widget):
         """Handle Open GUI menu item."""
         try:
-            # Try to launch or focus the GUI
+            # First, try to focus existing window using wmctrl
+            result = subprocess.run(
+                ['wmctrl', '-a', 'OneDrive Sync Client'],
+                capture_output=True,
+                timeout=2
+            )
+            
+            if result.returncode == 0:
+                logger.info("Focused existing ODSC GUI window")
+                return
+            
+            # No existing window found, launch new instance
             subprocess.Popen(
                 ['odsc-gui'],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            logger.info("Launched ODSC GUI")
+            logger.info("Launched new ODSC GUI instance")
+            
+        except FileNotFoundError:
+            # wmctrl not available, just try to launch GUI
+            try:
+                subprocess.Popen(
+                    ['odsc-gui'],
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                logger.info("Launched ODSC GUI (wmctrl not available)")
+            except Exception as e:
+                logger.error(f"Failed to launch GUI: {e}")
+                
+        except subprocess.TimeoutExpired:
+            logger.warning("Timeout checking for existing GUI window")
+            
         except Exception as e:
-            logger.error(f"Failed to launch GUI: {e}")
+            logger.error(f"Error opening GUI: {e}")
     
     def _on_stop_service(self, widget):
         """Handle Stop Service menu item."""
