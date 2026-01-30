@@ -19,6 +19,7 @@ def main():
     import gi
     gi.require_version('Gtk', '3.0')
     from gi.repository import Gtk, Gio, GLib
+    from .splash import SplashScreen
     
     class OneDriveApplication(Gtk.Application):
         """GTK Application for OneDrive Sync Client."""
@@ -29,12 +30,17 @@ def main():
             super().__init__(application_id="com.github.odsc",
                              flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
             self.window = None
+            self.splash = None
         
         def do_activate(self):
             """Activate the application."""
             if not self.window:
-                self.window = OneDriveGUI(self)
-                self.window.show_all()
+                # Show splash screen immediately
+                self.splash = SplashScreen()
+                self.splash.show_all()
+                
+                # Start loading main window in background
+                GLib.idle_add(self._load_main_window)
             else:
                 # Window already exists - bring it to focus
                 self.window.show_all()
@@ -51,6 +57,35 @@ def main():
                 
                 # Clear urgency hint after a moment
                 GLib.timeout_add(100, lambda: self.window.set_urgency_hint(False) or False)
+        
+        def _load_main_window(self):
+            """Load main window in background while splash is showing.
+            
+            Returns:
+                False to stop idle callback
+            """
+            # Create main window (loads in background, not shown yet)
+            self.window = OneDriveGUI(self)
+            
+            # Schedule splash to close after minimum display time (2 seconds)
+            GLib.timeout_add(2000, self._show_main_window)
+            
+            return False
+        
+        def _show_main_window(self):
+            """Hide splash and show main window.
+            
+            Returns:
+                False to stop timeout
+            """
+            if self.splash:
+                self.splash.close_splash()
+                self.splash = None
+            
+            if self.window:
+                self.window.show_all()
+            
+            return False
     
     app = OneDriveApplication()
     app.run(None)
