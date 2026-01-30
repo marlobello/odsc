@@ -39,8 +39,8 @@ def main():
                 self.splash = SplashScreen()
                 self.splash.show_all()
                 
-                # Start loading main window in background
-                GLib.idle_add(self._load_main_window)
+                # After 2 seconds, close splash and create main window
+                GLib.timeout_add(2000, self._create_and_show_main_window)
             else:
                 # Window already exists - bring it to focus
                 self.window.show_all()
@@ -58,32 +58,20 @@ def main():
                 # Clear urgency hint after a moment
                 GLib.timeout_add(100, lambda: self.window.set_urgency_hint(False) or False)
         
-        def _load_main_window(self):
-            """Load main window in background while splash is showing.
-            
-            Returns:
-                False to stop idle callback
-            """
-            # Create main window (loads in background, not shown yet)
-            self.window = OneDriveGUI(self)
-            
-            # Schedule splash to close after minimum display time (2 seconds)
-            GLib.timeout_add(2000, self._show_main_window)
-            
-            return False
-        
-        def _show_main_window(self):
-            """Hide splash and show main window.
+        def _create_and_show_main_window(self):
+            """Create and show main window after splash.
             
             Returns:
                 False to stop timeout
             """
+            # Close splash
             if self.splash:
                 self.splash.close_splash()
                 self.splash = None
             
-            if self.window:
-                self.window.show_all()
+            # Create and show main window
+            self.window = OneDriveGUI(self)
+            self.window.show_all()
             
             return False
     
