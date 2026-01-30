@@ -14,6 +14,15 @@ logger = logging.getLogger(__name__)
 class FileTreeViewMixin:
     """Mixin for file tree view logic, sorting, and tooltips."""
     
+    def _init_tree_view_cache(self):
+        """Initialize caches for tree view optimizations."""
+        self._folder_status_cache = {}
+        self._pending_uploads_scanned = False
+    
+    def _clear_tree_view_cache(self):
+        """Clear all tree view caches."""
+        self._folder_status_cache = {}
+    
     def _render_status_icon(self, column, cell, model, iter, data):
         """Render OneDrive-style status icon.
         
@@ -83,7 +92,7 @@ class FileTreeViewMixin:
         tooltip_text = None
         
         if is_folder:
-            folder_status = self._get_folder_sync_status(model, iter)
+            folder_status = self._get_folder_sync_status_cached(model, iter)
             if folder_status == 'all':
                 tooltip_text = 'All files synced - All files in this folder are available locally'
             elif folder_status == 'partial':
@@ -106,6 +115,24 @@ class FileTreeViewMixin:
             return True
         
         return False
+    
+    def _get_folder_sync_status_cached(self, model, folder_iter):
+        """Get cached sync status of a folder.
+        
+        Args:
+            model: TreeModel
+            folder_iter: TreeIter for the folder
+            
+        Returns:
+            'all', 'partial', 'none', or 'empty'
+        """
+        file_path = model.get_value(folder_iter, 7)
+        if file_path in self._folder_status_cache:
+            return self._folder_status_cache[file_path]
+        
+        status = self._get_folder_sync_status(model, folder_iter)
+        self._folder_status_cache[file_path] = status
+        return status
     
     def _get_folder_sync_status(self, model, folder_iter):
         """Get sync status of all files in a folder (recursively).
@@ -302,13 +329,20 @@ class FileTreeViewMixin:
             GLib.timeout_add(50, restore)
     
     def _add_pending_uploads(self, sync_dir: Path, remote_files_set: set, folder_iters: Dict) -> None:
-        """Add local files that haven't been uploaded to OneDrive yet.
+        """Add local files that haven't been uploaded to OneDrive yet (runs in background).
         
         Args:
             sync_dir: Local sync directory
             remote_files_set: Set of paths that exist on OneDrive
             folder_iters: Dictionary of folder path to TreeIter
         """
+        if not self._pending_uploads_scanned:
+            logger.info("Skipping pending uploads scan during initial load for better performance")
+            logger.info("Pending uploads will be detected by the daemon automatically")
+            self._pending_uploads_scanned = True
+            return
+        
+        logger.debug("Scanning for pending uploads...")
         pending_count = 0
         
         for path in sync_dir.rglob('*'):

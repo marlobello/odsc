@@ -59,6 +59,8 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         self.log_file_position = 0
         self.log_tail_timer_id = None
         
+        self._init_tree_view_cache()
+        
         if self.config.load_token():
             logger.info("Found existing token, initializing client")
             self._init_client()
@@ -611,7 +613,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         thread.start()
     
     def _update_file_list(self, files: List[Dict[str, Any]]) -> None:
-        """Update file list view with folder hierarchy.
+        """Update file list view with folder hierarchy using chunked rendering.
         
         Args:
             files: List of file metadata from OneDrive
@@ -622,6 +624,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         scroll_position = self._save_scroll_position()
         
         self.file_store.clear()
+        self._clear_tree_view_cache()
         
         self._update_status(f"Processing {len(files)} items...")
         
@@ -632,99 +635,157 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         folder_iters = {}
         remote_files_set = set()
         
-        def sort_key(x):
-            is_folder = 'folder' in x or x.get('is_folder', False)
-            if '_cache_path' in x:
-                cache_path = x['_cache_path']
+        # Pre-compute sort keys for better performance
+        items_with_keys = []
+        for item in files:
+            # Skip root folder artifact
+            name = item.get('name', '')
+            if name.lower() == 'root':
+                parent_ref = item.get('parentReference', {})
+                parent_path = parent_ref.get('path', '') if parent_ref else ''
+                # Only skip if it's at the root level (no parent or parent is /drive/root)
+                if not parent_path or parent_path in ('/drive/root', '/drive/root:', ''):
+                    logger.debug(f"Skipping 'root' folder at root level")
+                    continue
+            
+            is_folder = 'folder' in item or item.get('is_folder', False)
+            if '_cache_path' in item:
+                cache_path = item['_cache_path']
                 parent = str(Path(cache_path).parent) if '/' in cache_path else ''
                 sort_path = cache_path
             else:
-                parent = x.get('parentReference', {}).get('path', '')
-                sort_path = parent + '/' + x.get('name', '')
-            
-            return (
-                not is_folder,
-                parent,
-                sort_path
-            )
-        
-        sorted_items = sorted(files, key=sort_key)
-        
-        for item in sorted_items:
-            name = item.get('name', 'Unknown')
-            is_folder = 'folder' in item or item.get('is_folder', False)
-            item_id = item.get('id', '')
-            
-            try:
                 parent_ref = item.get('parentReference', {})
-                parent_path = parent_ref.get('path', '')
-                if parent_path:
-                    parent_path = sanitize_onedrive_path(parent_path)
+                parent = parent_ref.get('path', '') if parent_ref else ''
+                sort_path = f"{parent}/{name}"
+            
+            sort_key = (not is_folder, parent, sort_path)
+            items_with_keys.append((sort_key, item))
+        
+        # Sort once with pre-computed keys
+        items_with_keys.sort(key=lambda x: x[0])
+        sorted_items = [item for _, item in items_with_keys]
+        
+        # Use nonlocal variables accessible to nested function
+        self._folder_iters = {}
+        self._remote_files_set = set()
+        
+        # Load state ONCE before processing (not per file!)
+        state = self.config.load_state()
+        files_state = state.get('files', {})
+        
+        # Process items in chunks for responsive UI
+        chunk_size = 50  # Process 50 items at a time for better responsiveness
+        total_items = len(sorted_items)
+        
+        def process_chunk(start_idx):
+            """Process a chunk of items and schedule next chunk."""
+            end_idx = min(start_idx + chunk_size, total_items)
+            
+            for i in range(start_idx, end_idx):
+                item = sorted_items[i]
+                name = item.get('name', 'Unknown')
+                is_folder = 'folder' in item or item.get('is_folder', False)
+                item_id = item.get('id', '')
                 
-                if not parent_path and '_cache_path' in item:
-                    cache_path = item['_cache_path']
-                    if '/' in cache_path:
-                        parent_path = str(Path(cache_path).parent)
-                        if parent_path == '.':
-                            parent_path = ''
-                    full_path = cache_path
-                else:
+                try:
+                    parent_ref = item.get('parentReference', {})
+                    parent_path = parent_ref.get('path', '')
                     if parent_path:
-                        full_path = str(Path(parent_path) / name)
+                        parent_path = sanitize_onedrive_path(parent_path)
+                    
+                    if not parent_path and '_cache_path' in item:
+                        cache_path = item['_cache_path']
+                        if '/' in cache_path:
+                            parent_path = str(Path(cache_path).parent)
+                            if parent_path == '.':
+                                parent_path = ''
+                        full_path = cache_path
                     else:
-                        full_path = name
+                        if parent_path:
+                            full_path = str(Path(parent_path) / name)
+                        else:
+                            full_path = name
+                    
+                    # Skip root folder artifact
+                    if full_path.lower() in ('root', 'root/', '/root') or name.lower() == 'root':
+                        logger.debug(f"Skipping 'root' folder artifact: {name}")
+                        continue
+                    
+                    validated_path = validate_sync_path(full_path, sync_dir)
+                    
+                    self._remote_files_set.add(full_path)
                 
-                validated_path = validate_sync_path(full_path, sync_dir)
+                except SecurityError as e:
+                    logger.warning(f"Skipping unsafe path for {name}: {e}")
+                    continue
+                except Exception as e:
+                    logger.warning(f"Error processing item {name}: {e}")
+                    continue
                 
-                remote_files_set.add(full_path)
+                parent_iter = None
+                if parent_path and parent_path != '/':
+                    parent_iter = self._folder_iters.get(parent_path.lstrip('/'))
+                
+                if is_folder:
+                    icon = "folder"
+                    size_str = ""
+                    modified = ""
+                    is_local = (sync_dir / full_path).exists()
+                    
+                    iter = self.file_store.append(parent_iter, [
+                        icon, name, size_str, modified, is_local, item_id, True, full_path, ""
+                    ])
+                    self._folder_iters[full_path] = iter
+                    
+                else:
+                    icon = self._get_file_icon(name)
+                    size = self._format_size(item.get('size', 0))
+                    modified = item.get('lastModifiedDateTime', '')[:10] if 'lastModifiedDateTime' in item else ''
+                    
+                    local_path = sync_dir / full_path
+                    is_local = local_path.exists()
+                    
+                    # Use pre-loaded state (not loaded per file!)
+                    file_state = files_state.get(full_path, {})
+                    error_msg = file_state.get('upload_error', '')
+                    
+                    self.file_store.append(parent_iter, [
+                        icon, name, size, modified, is_local, item_id, False, full_path, error_msg
+                    ])
             
-            except SecurityError as e:
-                logger.warning(f"Skipping unsafe path for {name}: {e}")
-                continue
-            except Exception as e:
-                logger.warning(f"Error processing item {name}: {e}")
-                continue
+            # Update progress
+            if total_items > 0:
+                progress = int((end_idx / total_items) * 100)
+                self._update_status(f"Loading files... {progress}%")
             
-            parent_iter = None
-            if parent_path and parent_path != '/':
-                parent_iter = folder_iters.get(parent_path.lstrip('/'))
-            
-            if is_folder:
-                icon = "folder"
-                size_str = ""
-                modified = ""
-                is_local = (sync_dir / full_path).exists()
-                
-                iter = self.file_store.append(parent_iter, [
-                    icon, name, size_str, modified, is_local, item_id, True, full_path, ""
-                ])
-                folder_iters[full_path] = iter
-                logger.debug(f"Added folder: {full_path}")
-                
+            # Schedule next chunk or finalize
+            if end_idx < total_items:
+                # Use timeout instead of idle_add for better UI responsiveness
+                GLib.timeout_add(10, process_chunk, end_idx)
             else:
-                icon = self._get_file_icon(name)
-                size = self._format_size(item.get('size', 0))
-                modified = item.get('lastModifiedDateTime', '')[:10] if 'lastModifiedDateTime' in item else ''
-                
-                local_path = sync_dir / full_path
-                is_local = local_path.exists()
-                
-                state = self.config.load_state()
-                file_state = state.get('files', {}).get(full_path, {})
-                error_msg = file_state.get('upload_error', '')
-                
-                self.file_store.append(parent_iter, [
-                    icon, name, size, modified, is_local, item_id, False, full_path, error_msg
-                ])
-                logger.debug(f"Added file: {full_path}")
+                # All items processed
+                GLib.idle_add(self._finalize_file_list, expanded_paths, scroll_position)
+            
+            return False  # Don't repeat this idle callback
         
-        logger.debug("Scanning for local files pending upload...")
-        self._add_pending_uploads(sync_dir, remote_files_set, folder_iters)
+        # Start processing chunks
+        GLib.idle_add(process_chunk, 0)
+    
+    def _finalize_file_list(self, expanded_paths, scroll_position):
+        """Finalize file list after chunked rendering.
         
+        Args:
+            expanded_paths: Previously expanded paths to restore
+            scroll_position: Previous scroll position to restore
+        """
         self._restore_expanded_state(expanded_paths)
         self._restore_scroll_position(scroll_position)
         
-        self._update_status(f"Loaded {len(files)} items")
+        total_items = len(self.remote_files)
+        self._update_status(f"Loaded {total_items} items")
+        logger.info(f"File tree loaded with {total_items} items")
+        
+        return False  # Don't repeat this idle callback
     
     def _format_size(self, size: int) -> str:
         """Format file size.
