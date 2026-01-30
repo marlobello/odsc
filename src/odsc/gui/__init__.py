@@ -21,6 +21,9 @@ def main():
     from gi.repository import Gtk, Gio, GLib
     from .splash import SplashScreen
     
+    splash_window = None
+    main_window_ref = [None]  # Use list to allow modification in nested function
+    
     class OneDriveApplication(Gtk.Application):
         """GTK Application for OneDrive Sync Client."""
         
@@ -30,17 +33,37 @@ def main():
             super().__init__(application_id="com.github.odsc",
                              flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
             self.window = None
-            self.splash = None
         
         def do_activate(self):
             """Activate the application."""
+            nonlocal splash_window, main_window_ref
+            
             if not self.window:
                 # Show splash screen immediately
-                self.splash = SplashScreen()
-                self.splash.show_all()
+                splash_window = SplashScreen()
+                splash_window.show_all()
                 
                 # After 2 seconds, close splash and create main window
-                GLib.timeout_add(2000, self._create_and_show_main_window)
+                def create_main():
+                    try:
+                        # Close splash
+                        if splash_window:
+                            splash_window.close_splash()
+                        
+                        # Create and show main window
+                        self.window = OneDriveGUI(self)
+                        self.window.show_all()
+                        main_window_ref[0] = self.window
+                        
+                    except Exception as e:
+                        import traceback
+                        print(f"Error creating main window: {e}")
+                        traceback.print_exc()
+                    
+                    return False
+                
+                GLib.timeout_add(2000, create_main)
+                
             else:
                 # Window already exists - bring it to focus
                 self.window.show_all()
@@ -57,21 +80,6 @@ def main():
                 
                 # Clear urgency hint after a moment
                 GLib.timeout_add(100, lambda: self.window.set_urgency_hint(False) or False)
-        
-        def _create_and_show_main_window(self):
-            """Create and show main window after splash.
-            
-            Returns:
-                False to stop timeout
-            """
-            # Close splash
-            if self.splash:
-                self.splash.close_splash()
-                self.splash = None
-            
-            # Create and show main window
-            self.window = OneDriveGUI(self)
-            self.window.show_all()
             
             return False
     
