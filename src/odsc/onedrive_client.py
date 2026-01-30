@@ -62,7 +62,7 @@ class OneDriveClient:
     SCOPES = "files.readwrite offline_access User.Read"
     
     # Default public client ID for ODSC
-    # Registered Azure application for OneDrive Consumer (personal accounts)
+    # Public client identifier for OneDrive Consumer (personal accounts)
     # Users can override this by providing their own client ID if needed
     DEFAULT_CLIENT_ID = "df3a0308-c302-4962-b115-08bd59526bc5"
     

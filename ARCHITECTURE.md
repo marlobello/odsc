@@ -181,8 +181,6 @@ Exchange for Access Token
 Store Token + Refresh Token
 ```
 
-**Note**: No Azure app registration required. ODSC uses a built-in public client ID.
-
 ## File Sync Strategy
 
 ### What Gets Synced
@@ -222,14 +220,13 @@ Store Token + Refresh Token
 - No server-side storage of credentials
 
 ### Default Client ID
-- Uses Microsoft's legacy OneDrive public client ID
-- No Azure app registration required for end users
+- Uses Microsoft's public client ID for OneDrive authentication
 - Safe to include in source code (public client identifier)
 - Widely used by OneDrive sync implementations
 
 ### Recommendations
-- Default client ID works for most users (OneDrive Consumer)
-- Custom client IDs can be used for advanced scenarios
+- Default authentication works for most users (OneDrive Consumer)
+- Custom client IDs can be configured for advanced scenarios
 - Regularly review app permissions in Microsoft account
 
 ## Performance Considerations
@@ -334,7 +331,7 @@ Future consideration: Plugin system for:
 
 **Authentication Fails**:
 - Check redirect URI is exactly `http://localhost:8080`
-- Verify permissions granted in Azure
+- Verify permissions granted during Microsoft login
 
 **Files Not Syncing**:
 - Check daemon is running
