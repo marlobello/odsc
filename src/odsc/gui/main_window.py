@@ -725,8 +725,17 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                 parent_iter = None
                 if parent_path and parent_path != '/':
                     parent_iter = self._folder_iters.get(parent_path.lstrip('/'))
+                    
+                    # If parent folder doesn't exist yet, create it (and ancestors)
+                    if parent_iter is None and parent_path:
+                        parent_iter = self._ensure_parent_folders(parent_path, sync_dir)
                 
                 if is_folder:
+                    # Skip if this folder was already added (deduplication)
+                    if full_path in self._folder_iters:
+                        logger.debug(f"Skipping duplicate folder: {full_path}")
+                        continue
+                    
                     icon = "folder"
                     size_str = ""
                     modified = ""
@@ -770,6 +779,47 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         
         # Start processing chunks
         GLib.idle_add(process_chunk, 0)
+    
+    def _ensure_parent_folders(self, parent_path: str, sync_dir: Path):
+        """Ensure all parent folders exist in tree, creating them if needed.
+        
+        Args:
+            parent_path: Path to the parent folder
+            sync_dir: Sync directory
+            
+        Returns:
+            TreeIter for the parent folder
+        """
+        parent_path = parent_path.lstrip('/')
+        
+        # Check if already exists
+        if parent_path in self._folder_iters:
+            return self._folder_iters[parent_path]
+        
+        # Split path into parts and ensure each level exists
+        parts = Path(parent_path).parts
+        current_path = ""
+        parent_iter = None
+        
+        for part in parts:
+            if current_path:
+                current_path = str(Path(current_path) / part)
+            else:
+                current_path = part
+            
+            # Check if this level exists
+            if current_path not in self._folder_iters:
+                # Create this folder level
+                is_local = (sync_dir / current_path).exists()
+                iter = self.file_store.append(parent_iter, [
+                    "folder", part, "", "", is_local, "", True, current_path, ""
+                ])
+                self._folder_iters[current_path] = iter
+                parent_iter = iter
+            else:
+                parent_iter = self._folder_iters[current_path]
+        
+        return parent_iter
     
     def _finalize_file_list(self, expanded_paths, scroll_position):
         """Finalize file list after chunked rendering.
