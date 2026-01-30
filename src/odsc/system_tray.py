@@ -184,44 +184,17 @@ class SystemTrayIndicator:
     def _on_open_gui(self, widget):
         """Handle Open GUI menu item."""
         try:
-            # First, try to focus existing window using wmctrl
-            result = subprocess.run(
-                ['wmctrl', '-a', 'OneDrive Sync Client'],
-                capture_output=True,
-                timeout=2
-            )
-            
-            if result.returncode == 0:
-                logger.info("Focused existing ODSC GUI window")
-                return
-            
-            # No existing window found, launch new instance
+            # Just launch odsc-gui - Gtk.Application handles single-instance
+            # automatically and will activate the existing window if running
             subprocess.Popen(
                 ['odsc-gui'],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            logger.info("Launched new ODSC GUI instance")
-            
-        except FileNotFoundError:
-            # wmctrl not available, just try to launch GUI
-            try:
-                subprocess.Popen(
-                    ['odsc-gui'],
-                    start_new_session=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                logger.info("Launched ODSC GUI (wmctrl not available)")
-            except Exception as e:
-                logger.error(f"Failed to launch GUI: {e}")
-                
-        except subprocess.TimeoutExpired:
-            logger.warning("Timeout checking for existing GUI window")
-            
+            logger.info("Launched/activated ODSC GUI")
         except Exception as e:
-            logger.error(f"Error opening GUI: {e}")
+            logger.error(f"Failed to launch GUI: {e}")
     
     def _on_stop_service(self, widget):
         """Handle Stop Service menu item."""

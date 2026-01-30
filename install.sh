@@ -38,7 +38,6 @@ if command -v apt-get &> /dev/null; then
         gir1.2-gtk-3.0 \
         gir1.2-gio-2.0 \
         gir1.2-appindicator3-0.1 \
-        wmctrl \
         python3-dbus \
         python3-requests \
         python3-watchdog \
@@ -55,7 +54,6 @@ elif command -v dnf &> /dev/null; then
         python3-gobject \
         gtk3 \
         libappindicator-gtk3 \
-        wmctrl \
         python3-dbus \
         python3-requests \
         python3-watchdog \

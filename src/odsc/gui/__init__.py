@@ -25,8 +25,9 @@ def main():
         
         def __init__(self):
             """Initialize application."""
+            # Use default flags which enables single-instance behavior
             super().__init__(application_id="com.github.odsc",
-                             flags=Gio.ApplicationFlags.FLAGS_NONE)
+                             flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
             self.window = None
         
         def do_activate(self):
