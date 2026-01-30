@@ -17,12 +17,16 @@ class SplashScreen(Gtk.Window):
     
     def __init__(self):
         """Initialize splash screen."""
-        super().__init__(type=Gtk.WindowType.POPUP)
+        # Use TOPLEVEL instead of POPUP to avoid positioning warnings
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
         
         self.set_position(Gtk.WindowPosition.CENTER)
         self.set_default_size(400, 300)
-        self.set_decorated(False)
+        self.set_decorated(False)  # No window decorations
         self.set_resizable(False)
+        self.set_skip_taskbar_hint(True)  # Don't show in taskbar
+        self.set_skip_pager_hint(True)  # Don't show in pager
+        self.set_type_hint(Gtk.WindowTypeHint.SPLASHSCREEN)  # Mark as splash screen
         
         # Create main container
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
@@ -74,11 +78,17 @@ class SplashScreen(Gtk.Window):
         Returns:
             Gtk.Image or None if logo not found
         """
-        # Try to find logo file
+        # Try to find logo file - check from package location and system locations
         possible_paths = [
-            Path(__file__).parent.parent.parent / "desktop" / "odsc.png",
+            # From installed package location
+            Path(__file__).parent.parent.parent.parent / "desktop" / "odsc.png",
+            # From development location
+            Path(__file__).resolve().parents[3] / "desktop" / "odsc.png",
+            # System installations
             Path("/usr/share/pixmaps/odsc.png"),
+            Path("/usr/local/share/pixmaps/odsc.png"),
             Path.home() / ".local/share/icons/odsc.png",
+            Path.home() / ".local/share/pixmaps/odsc.png",
         ]
         
         for path in possible_paths:
@@ -91,12 +101,24 @@ class SplashScreen(Gtk.Window):
                         True  # preserve aspect ratio
                     )
                     image = Gtk.Image.new_from_pixbuf(pixbuf)
-                    logger.debug(f"Loaded splash logo from: {path}")
+                    logger.info(f"Loaded splash logo from: {path}")
                     return image
                 except Exception as e:
                     logger.warning(f"Could not load logo from {path}: {e}")
         
-        logger.warning("Could not find ODSC logo for splash screen")
+        # Try loading from icon theme as fallback
+        try:
+            icon_theme = Gtk.IconTheme.get_default()
+            if icon_theme and icon_theme.has_icon('odsc'):
+                pixbuf = icon_theme.load_icon('odsc', 128, 0)
+                if pixbuf:
+                    image = Gtk.Image.new_from_pixbuf(pixbuf)
+                    logger.info("Loaded splash logo from icon theme")
+                    return image
+        except Exception as e:
+            logger.debug(f"Could not load from icon theme: {e}")
+        
+        logger.warning("Could not find ODSC logo for splash screen - splash will show without logo")
         return None
     
     def close_splash(self) -> bool:
