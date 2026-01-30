@@ -18,7 +18,7 @@ def main():
     """Main entry point for GUI."""
     import gi
     gi.require_version('Gtk', '3.0')
-    from gi.repository import Gtk, Gio
+    from gi.repository import Gtk, Gio, GLib
     
     class OneDriveApplication(Gtk.Application):
         """GTK Application for OneDrive Sync Client."""
@@ -39,8 +39,18 @@ def main():
                 # Window already exists - bring it to focus
                 self.window.show_all()
                 self.window.deiconify()  # Un-minimize if minimized
-                self.window.present_with_time(Gtk.get_current_event_time())  # More aggressive than present()
-                self.window.get_window().focus(Gtk.get_current_event_time())  # Focus the GdkWindow
+                
+                # Set urgency hint to get window manager attention
+                self.window.set_urgency_hint(True)
+                
+                # Try to present with timestamp
+                self.window.present_with_time(Gtk.get_current_event_time())
+                
+                # Also try present() for good measure
+                self.window.present()
+                
+                # Clear urgency hint after a moment
+                GLib.timeout_add(100, lambda: self.window.set_urgency_hint(False) or False)
     
     app = OneDriveApplication()
     app.run(None)
