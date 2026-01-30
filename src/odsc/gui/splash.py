@@ -7,7 +7,8 @@ from typing import Optional
 
 import gi
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, GdkPixbuf, GLib
+gi.require_version('Gdk', '3.0')
+from gi.repository import Gtk, Gdk, GdkPixbuf, GLib
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class SplashScreen(Gtk.Window):
         self.set_resizable(False)
         self.set_skip_taskbar_hint(True)  # Don't show in taskbar
         self.set_skip_pager_hint(True)  # Don't show in pager
-        self.set_type_hint(Gtk.WindowTypeHint.SPLASHSCREEN)  # Mark as splash screen
+        self.set_type_hint(Gdk.WindowTypeHint.SPLASHSCREEN)  # Mark as splash screen
         
         # Create main container
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
