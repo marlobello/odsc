@@ -154,7 +154,9 @@ systemctl --user restart odsc
 ```
 
 ### Local state corrupted or out of sync? (Advanced)
-⚠️ **WARNING: This will delete all local files and re-download from OneDrive!**
+
+> [!CAUTION]
+> This will delete all local files and re-download from OneDrive!
 
 ```bash
 # See what would be deleted (safe)
