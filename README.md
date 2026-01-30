@@ -12,6 +12,12 @@ A lightweight Linux sync client for Microsoft OneDrive that runs as a background
 - **Force Sync**: Manual sync trigger via GUI menu
 - **Folder Sync**: Bidirectional folder syncing including empty folders
 
+## Screenshot
+
+![ODSC GUI](screenshot-gui.png)
+
+*ODSC graphical interface showing file browser with selective sync controls*
+
 ## Requirements
 
 - Linux with GTK 3.0+ (Ubuntu 20.04+, Fedora 33+, etc.)
