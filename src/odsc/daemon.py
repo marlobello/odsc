@@ -265,6 +265,10 @@ class SyncDaemon:
         if remote_files is None:
             return  # Error occurred, abort sync
         
+        # IMPORTANT: Verify deletions completed before scanning filesystem
+        # This ensures deleted folders don't appear in the scan and get re-uploaded
+        self._verify_and_retry_deletions(sync_dir)
+        
         # Scan local filesystem
         local_files, local_folders = self._scan_local_filesystem(sync_dir)
         
@@ -360,6 +364,62 @@ class SyncDaemon:
                 # Remove from cache and state
                 self._remove_from_cache(path)
                 break
+    
+    def _verify_and_retry_deletions(self, sync_dir: Path) -> None:
+        """Verify deletions completed and retry if necessary.
+        
+        This ensures folders deleted from OneDrive are actually removed locally
+        before we scan the filesystem. Otherwise they might be re-uploaded.
+        
+        Args:
+            sync_dir: Sync directory path
+        """
+        if not hasattr(self, '_deleted_from_remote') or not self._deleted_from_remote:
+            return  # Nothing to verify
+        
+        import shutil
+        
+        for path in list(self._deleted_from_remote):
+            local_path = sync_dir / path
+            
+            # Check if deletion succeeded
+            if not local_path.exists():
+                logger.debug(f"Deletion verified successful: {path}")
+                continue
+            
+            # Deletion failed or incomplete - retry with more aggressive approach
+            logger.warning(f"Deletion incomplete, retrying: {path}")
+            
+            for attempt in range(3):
+                try:
+                    if local_path.is_dir():
+                        # For directories, use rmtree directly (skip send2trash)
+                        shutil.rmtree(local_path, ignore_errors=False)
+                        logger.info(f"Directory deleted on retry {attempt + 1}: {path}")
+                    else:
+                        # For files, use unlink
+                        local_path.unlink(missing_ok=True)
+                        logger.info(f"File deleted on retry {attempt + 1}: {path}")
+                    
+                    # Verify it's really gone
+                    if not local_path.exists():
+                        break
+                    
+                except PermissionError as e:
+                    if attempt < 2:
+                        # Wait briefly and retry (file might be locked)
+                        logger.debug(f"Permission denied, will retry: {e}")
+                        time.sleep(0.5)
+                    else:
+                        logger.error(f"Permission denied after 3 attempts: {path}")
+                        logger.error(f"Folder will remain locally but won't be uploaded (tracked in _deleted_from_remote)")
+                except Exception as e:
+                    if attempt < 2:
+                        logger.debug(f"Deletion failed, will retry: {e}")
+                        time.sleep(0.5)
+                    else:
+                        logger.error(f"Could not delete after 3 attempts: {path} - {e}")
+                        logger.error(f"Item will remain locally but won't be uploaded (tracked in _deleted_from_remote)")
     
     def _process_remote_folder(self, item: Dict[str, Any], sync_dir: Path) -> None:
         """Process a folder from OneDrive delta."""
