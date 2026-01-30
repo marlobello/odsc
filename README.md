@@ -93,6 +93,9 @@ odsc-daemon
 - **Remote deletions** → Local files moved to trash (not permanently deleted)
 - **Local deletions** → Files remain on OneDrive (prevents accidental loss)
 - **Conflicts** → Both versions kept (`.conflict` file created)
+- **"Do No Harm"** → Design priority is to never destroy or lose OneDrive data
+
+> **⚠️ NOTE:** Large-scale folder organizational changes (mass renames, deep restructuring) on the Linux side have not been extensively tested and are generally not recommended. This tool is designed to provide **simple and reliable file syncing capabilities**, not complex file management operations. For major organizational changes, use the OneDrive web interface or official clients.
 
 ## Configuration
 
