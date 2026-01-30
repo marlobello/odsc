@@ -333,17 +333,20 @@ class SyncDaemon:
         return remote_files
     
     def _process_remote_deletion(self, item: Dict[str, Any]) -> None:
-        """Process a deleted item from OneDrive."""
+        """Process a deleted item from OneDrive (file or folder)."""
         item_id = item['id']
         for path, cached_item in list(self.state['file_cache'].items()):
             if cached_item.get('id') == item_id:
-                logger.info(f"Item deleted on OneDrive: {path}")
+                is_folder = 'folder' in cached_item or cached_item.get('is_folder', False)
+                item_type = "folder" if is_folder else "file"
+                logger.info(f"{item_type.capitalize()} deleted on OneDrive: {path}")
                 
-                if path in self.state.get('files', {}):
-                    local_path = self.config.sync_directory / path
-                    if local_path.exists():
-                        self._move_to_recycle_bin(local_path, path)
+                # Delete local file/folder if it exists
+                local_path = self.config.sync_directory / path
+                if local_path.exists():
+                    self._move_to_recycle_bin(local_path, path)
                 
+                # Remove from cache and state
                 self._remove_from_cache(path)
                 break
     
@@ -621,24 +624,32 @@ class SyncDaemon:
         self._cleanup_recycle_bin()
     
     def _move_to_recycle_bin(self, local_path: Path, rel_path: str) -> None:
-        """Move file to system recycle bin/trash.
+        """Move file or folder to system recycle bin/trash.
         
         Args:
-            local_path: Full path to the local file
+            local_path: Full path to the local file or folder
             rel_path: Relative path for logging
         """
         try:
             if local_path.exists():
                 send2trash(str(local_path))
-                logger.info(f"Moved to recycle bin: {rel_path}")
+                item_type = "folder" if local_path.is_dir() else "file"
+                logger.info(f"Moved {item_type} to recycle bin: {rel_path}")
             else:
-                logger.warning(f"File not found for recycling: {rel_path}")
+                logger.warning(f"Item not found for recycling: {rel_path}")
         except Exception as e:
             logger.error(f"Failed to move {rel_path} to recycle bin: {e}")
             # Fallback to permanent deletion if trash fails
             try:
-                local_path.unlink(missing_ok=True)
-                logger.warning(f"Permanently deleted (trash failed): {rel_path}")
+                if local_path.is_dir():
+                    # For directories, use rmtree
+                    import shutil
+                    shutil.rmtree(local_path, ignore_errors=False)
+                    logger.warning(f"Permanently deleted folder (trash failed): {rel_path}")
+                else:
+                    # For files, use unlink
+                    local_path.unlink(missing_ok=True)
+                    logger.warning(f"Permanently deleted file (trash failed): {rel_path}")
             except Exception as e2:
                 logger.error(f"Failed to delete {rel_path}: {e2}")
     
