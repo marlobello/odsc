@@ -297,7 +297,7 @@ class SettingsDialog(Gtk.Dialog):
         hbox1 = Gtk.Box(spacing=6)
         label1 = Gtk.Label(label="Sync Directory:")
         label1.set_width_chars(20)
-        label1.set_halign(Gtk.Align.START)
+        label1.set_halign(Gtk.Align.END)
         hbox1.pack_start(label1, False, False, 0)
         
         self.sync_dir_button = Gtk.FileChooserButton(title="Select Sync Directory")
@@ -312,7 +312,7 @@ class SettingsDialog(Gtk.Dialog):
         hbox2 = Gtk.Box(spacing=6)
         label2 = Gtk.Label(label="Sync Interval (sec):")
         label2.set_width_chars(20)
-        label2.set_halign(Gtk.Align.START)
+        label2.set_halign(Gtk.Align.END)
         hbox2.pack_start(label2, False, False, 0)
         
         adjustment = Gtk.Adjustment(value=config.sync_interval, lower=60, upper=86400, step_increment=60)
@@ -326,7 +326,7 @@ class SettingsDialog(Gtk.Dialog):
         hbox3 = Gtk.Box(spacing=6)
         label3 = Gtk.Label(label="Log Level:")
         label3.set_width_chars(20)
-        label3.set_halign(Gtk.Align.START)
+        label3.set_halign(Gtk.Align.END)
         hbox3.pack_start(label3, False, False, 0)
         
         # Create combo box for log levels using ComboBoxText
@@ -351,12 +351,12 @@ class SettingsDialog(Gtk.Dialog):
         
         # Show splash screen checkbox
         hbox4 = Gtk.Box(spacing=6)
-        label4 = Gtk.Label(label="Show Splash Screen:")
+        label4 = Gtk.Label(label="Splash Screen:")
         label4.set_width_chars(20)
-        label4.set_halign(Gtk.Align.START)
+        label4.set_halign(Gtk.Align.END)
         hbox4.pack_start(label4, False, False, 0)
         
-        self.show_splash_check = Gtk.CheckButton(label="Display splash screen on startup")
+        self.show_splash_check = Gtk.CheckButton(label="Display on startup")
         self.show_splash_check.set_active(config.show_splash)
         self.show_splash_check.connect("toggled", self._on_show_splash_changed)
         hbox4.pack_start(self.show_splash_check, False, False, 0)
