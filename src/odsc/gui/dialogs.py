@@ -92,23 +92,27 @@ class AuthInfoDialog(Gtk.Dialog):
         
         self.config = config
         self.client = client
-        self.set_default_size(500, 300)
-        self.set_border_width(10)
+        self.set_default_size(550, 400)
+        self.set_border_width(0)
         
         box = self.get_content_area()
-        box.set_spacing(10)
+        box.set_spacing(0)
+        box.set_margin_top(18)
+        box.set_margin_bottom(18)
+        box.set_margin_start(24)
+        box.set_margin_end(24)
+        
+        # Main container
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        main_box.set_halign(Gtk.Align.CENTER)
+        main_box.set_size_request(500, -1)
+        box.pack_start(main_box, True, True, 0)
         
         # Check if authenticated
         token_data = config.load_token()
         is_authenticated = token_data is not None and client is not None
         
         if is_authenticated:
-            # Show authentication info
-            title_label = Gtk.Label()
-            title_label.set_markup("<b>Authentication Status</b>")
-            title_label.set_halign(Gtk.Align.START)
-            box.add(title_label)
-            
             # Get user info from API
             user_info = None
             try:
@@ -117,76 +121,60 @@ class AuthInfoDialog(Gtk.Dialog):
             except Exception as e:
                 logger.warning(f"Could not fetch user info: {e}")
             
-            # User Name (if available)
-            if user_info and 'displayName' in user_info:
-                name_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                name_label = Gtk.Label(label="User Name:")
-                name_label.set_width_chars(15)
-                name_label.set_halign(Gtk.Align.START)
-                name_value = Gtk.Label(label=user_info['displayName'])
-                name_value.set_halign(Gtk.Align.START)
-                name_box.pack_start(name_label, False, False, 0)
-                name_box.pack_start(name_value, False, False, 0)
-                box.add(name_box)
+            # Account Information Group
+            account_group = self._create_auth_group(
+                "Account Information",
+                "Microsoft account details"
+            )
+            main_box.pack_start(account_group, False, False, 0)
             
-            # Email (if available)
+            # User Name
+            if user_info and 'displayName' in user_info:
+                name_row = self._create_info_row(
+                    "User Name",
+                    html.escape(user_info['displayName'])
+                )
+                account_group.add(name_row)
+            
+            # Email
             if user_info:
                 email = user_info.get('mail') or user_info.get('userPrincipalName')
                 if email:
-                    email_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                    email_label = Gtk.Label(label="Email:")
-                    email_label.set_width_chars(15)
-                    email_label.set_halign(Gtk.Align.START)
-                    email_value = Gtk.Label(label=email)
-                    email_value.set_halign(Gtk.Align.START)
-                    email_value.set_selectable(True)
-                    email_box.pack_start(email_label, False, False, 0)
-                    email_box.pack_start(email_value, False, False, 0)
-                    box.add(email_box)
+                    email_row = self._create_info_row(
+                        "Email",
+                        html.escape(email),
+                        selectable=True
+                    )
+                    account_group.add(email_row)
             
             # Status
-            status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            status_label = Gtk.Label(label="Status:")
-            status_label.set_width_chars(15)
-            status_label.set_halign(Gtk.Align.START)
-            status_value = Gtk.Label(label="✓ Authenticated")
-            status_value.set_halign(Gtk.Align.START)
-            status_box.pack_start(status_label, False, False, 0)
-            status_box.pack_start(status_value, False, False, 0)
-            box.add(status_box)
+            status_row = self._create_info_row(
+                "Status",
+                "✓ Authenticated"
+            )
+            account_group.add(status_row)
+            
+            # Session Information Group
+            session_group = self._create_auth_group(
+                "Session Information",
+                "Token and authentication status"
+            )
+            main_box.pack_start(session_group, False, False, 0)
             
             # Last Login Time
             if token_data and 'expires_at' in token_data and 'expires_in' in token_data:
                 import time
                 from datetime import datetime
-                # Calculate when token was created (expires_at - expires_in)
                 expires_at = token_data['expires_at']
                 expires_in = token_data['expires_in']
                 created_at = expires_at - expires_in
                 login_datetime = datetime.fromtimestamp(created_at)
                 
-                login_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                login_label = Gtk.Label(label="Last Login:")
-                login_label.set_width_chars(15)
-                login_label.set_halign(Gtk.Align.START)
-                login_value = Gtk.Label(label=login_datetime.strftime('%Y-%m-%d %H:%M:%S'))
-                login_value.set_halign(Gtk.Align.START)
-                login_box.pack_start(login_label, False, False, 0)
-                login_box.pack_start(login_value, False, False, 0)
-                box.add(login_box)
-            
-            # Application ID
-            client_id_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            client_id_label = Gtk.Label(label="Application ID:")
-            client_id_label.set_width_chars(15)
-            client_id_label.set_halign(Gtk.Align.START)
-            # Escape client ID (though it's controlled, be defensive)
-            client_id_value = Gtk.Label(label=html.escape(client.client_id if client else "Unknown"))
-            client_id_value.set_halign(Gtk.Align.START)
-            client_id_value.set_selectable(True)
-            client_id_box.pack_start(client_id_label, False, False, 0)
-            client_id_box.pack_start(client_id_value, False, False, 0)
-            box.add(client_id_box)
+                login_row = self._create_info_row(
+                    "Last Login",
+                    login_datetime.strftime('%Y-%m-%d %H:%M:%S')
+                )
+                session_group.add(login_row)
             
             # Token expiry info
             if token_data and 'expires_at' in token_data:
@@ -196,205 +184,334 @@ class AuthInfoDialog(Gtk.Dialog):
                 expires_datetime = datetime.fromtimestamp(expires_at)
                 time_remaining = expires_at - time.time()
                 
-                expiry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                expiry_label = Gtk.Label(label="Token Expires:")
-                expiry_label.set_width_chars(15)
-                expiry_label.set_halign(Gtk.Align.START)
-                
                 if time_remaining > 0:
                     hours = int(time_remaining / 3600)
                     expiry_text = f"{expires_datetime.strftime('%Y-%m-%d %H:%M')} ({hours}h remaining)"
                 else:
                     expiry_text = "Expired (will auto-refresh)"
                 
-                expiry_value = Gtk.Label(label=expiry_text)
-                expiry_value.set_halign(Gtk.Align.START)
-                expiry_box.pack_start(expiry_label, False, False, 0)
-                expiry_box.pack_start(expiry_value, False, False, 0)
-                box.add(expiry_box)
+                expiry_row = self._create_info_row(
+                    "Token Expires",
+                    expiry_text
+                )
+                session_group.add(expiry_row)
             
             # Has refresh token?
             if token_data and 'refresh_token' in token_data:
-                refresh_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                refresh_label = Gtk.Label(label="Refresh Token:")
-                refresh_label.set_width_chars(15)
-                refresh_label.set_halign(Gtk.Align.START)
-                refresh_value = Gtk.Label(label="✓ Available")
-                refresh_value.set_halign(Gtk.Align.START)
-                refresh_box.pack_start(refresh_label, False, False, 0)
-                refresh_box.pack_start(refresh_value, False, False, 0)
-                box.add(refresh_box)
+                refresh_row = self._create_info_row(
+                    "Refresh Token",
+                    "✓ Available"
+                )
+                session_group.add(refresh_row)
             
             # Token file location
-            token_file_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            token_file_label = Gtk.Label(label="Token File:")
-            token_file_label.set_width_chars(15)
-            token_file_label.set_halign(Gtk.Align.START)
-            token_file_value = Gtk.Label(label=str(config.token_path))
-            token_file_value.set_halign(Gtk.Align.START)
-            token_file_value.set_selectable(True)
-            token_file_value.set_line_wrap(True)
-            token_file_box.pack_start(token_file_label, False, False, 0)
-            token_file_box.pack_start(token_file_value, False, False, 0)
-            box.add(token_file_box)
+            token_row = self._create_info_row(
+                "Token File",
+                str(config.token_path),
+                selectable=True,
+                wrap=True
+            )
+            session_group.add(token_row)
             
-            # Buttons - just Close
-            self.add_button("Close", Gtk.ResponseType.CLOSE)
+            # Buttons
+            self.add_button("_Close", Gtk.ResponseType.CLOSE)
             
         else:
-            # Not authenticated
-            title_label = Gtk.Label()
-            title_label.set_markup("<b>Not Authenticated</b>")
-            title_label.set_halign(Gtk.Align.START)
-            box.add(title_label)
-            
-            info_label = Gtk.Label(
-                label="You are not currently authenticated with OneDrive.\n\n"
-                      "Use Authentication → Login to log in with your Microsoft account."
+            # Not authenticated - show info message
+            not_auth_group = self._create_auth_group(
+                "Not Authenticated",
+                "You are not currently authenticated with OneDrive"
             )
-            info_label.set_halign(Gtk.Align.START)
-            info_label.set_line_wrap(True)
-            box.add(info_label)
+            main_box.pack_start(not_auth_group, False, False, 0)
             
-            # Show application ID that will be used
-            client_id = config.client_id or OneDriveClient.DEFAULT_CLIENT_ID
-            client_id_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            client_id_label = Gtk.Label(label="Application ID:")
-            client_id_label.set_width_chars(15)
-            client_id_label.set_halign(Gtk.Align.START)
-            client_id_value = Gtk.Label(label=client_id)
-            client_id_value.set_halign(Gtk.Align.START)
-            client_id_value.set_selectable(True)
-            client_id_box.pack_start(client_id_label, False, False, 0)
-            client_id_box.pack_start(client_id_value, False, False, 0)
-            box.add(client_id_box)
+            info_row = self._create_info_row(
+                "Action Required",
+                "Use Authentication → Login to authenticate with your Microsoft account",
+                wrap=True
+            )
+            not_auth_group.add(info_row)
             
-            # Buttons - just Close
-            self.add_button("Close", Gtk.ResponseType.CLOSE)
+            # Buttons
+            self.add_button("_Close", Gtk.ResponseType.CLOSE)
         
         self.show_all()
+    
+    def _create_auth_group(self, title: str, description: str) -> Gtk.Box:
+        """Create a Libadwaita-style group for authentication dialog."""
+        group_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        
+        # Header
+        header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        header_box.set_margin_start(12)
+        
+        title_label = Gtk.Label(label=title)
+        title_label.set_halign(Gtk.Align.START)
+        title_label.get_style_context().add_class("heading")
+        header_box.pack_start(title_label, False, False, 0)
+        
+        desc_label = Gtk.Label(label=description)
+        desc_label.set_halign(Gtk.Align.START)
+        desc_label.get_style_context().add_class("dim-label")
+        desc_label.get_style_context().add_class("caption")
+        header_box.pack_start(desc_label, False, False, 0)
+        
+        group_box.pack_start(header_box, False, False, 0)
+        
+        # Boxed list frame
+        frame = Gtk.Frame()
+        frame.set_shadow_type(Gtk.ShadowType.IN)
+        frame.get_style_context().add_class("view")
+        
+        list_box = Gtk.ListBox()
+        list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        frame.add(list_box)
+        
+        group_box.pack_start(frame, False, False, 0)
+        
+        # Store list_box reference
+        group_box.list_box = list_box
+        
+        return group_box
+    
+    def _create_info_row(self, label: str, value: str, selectable: bool = False, wrap: bool = False) -> Gtk.Box:
+        """Create an info row for authentication dialog."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row.set_margin_top(12)
+        row.set_margin_bottom(12)
+        row.set_margin_start(12)
+        row.set_margin_end(12)
+        
+        # Label
+        label_widget = Gtk.Label(label=label)
+        label_widget.set_halign(Gtk.Align.START)
+        label_widget.set_xalign(0)
+        label_widget.set_valign(Gtk.Align.START)
+        label_widget.set_width_chars(15)
+        row.pack_start(label_widget, False, False, 0)
+        
+        # Value
+        value_widget = Gtk.Label(label=value)
+        value_widget.set_halign(Gtk.Align.START)
+        value_widget.set_xalign(0)
+        value_widget.set_selectable(selectable)
+        if wrap:
+            value_widget.set_line_wrap(True)
+            value_widget.set_max_width_chars(50)
+        row.pack_start(value_widget, True, True, 0)
+        
+        return row
 
 
 class SettingsDialog(Gtk.Dialog):
-    """Settings dialog with GNOME-style layout."""
+    """Libadwaita-style preferences dialog using GTK3."""
     
     def __init__(self, parent, config: Config):
         """Initialize dialog."""
         Gtk.Dialog.__init__(self, title="Preferences", transient_for=parent, flags=0)
-        self.add_buttons("Close", Gtk.ResponseType.CLOSE)
+        self.add_buttons("_Close", Gtk.ResponseType.CLOSE)
         
         self.parent_window = parent
         self.config = config
-        self.set_default_size(500, 300)
-        self.set_border_width(12)
+        self.set_default_size(600, 400)
+        self.set_border_width(0)  # No border for modern look
         
         # Track if we're initializing to avoid triggering change handlers
         self._initializing = True
         
         box = self.get_content_area()
-        box.set_spacing(18)
+        box.set_spacing(0)
+        box.set_margin_top(18)
+        box.set_margin_bottom(18)
+        box.set_margin_start(24)
+        box.set_margin_end(24)
         
-        # Use Grid for GNOME-style two-column layout
-        grid = Gtk.Grid()
-        grid.set_column_spacing(12)
-        grid.set_row_spacing(12)
-        box.add(grid)
+        # Main container (no scrolling needed)
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        main_box.set_halign(Gtk.Align.CENTER)
+        main_box.set_size_request(540, -1)  # Clamp width like Adw
+        box.pack_start(main_box, True, True, 0)
         
-        row = 0
+        # Sync Settings Group
+        sync_group = self._create_preferences_group(
+            "Sync Settings",
+            "Configure synchronization behavior"
+        )
+        main_box.pack_start(sync_group, False, False, 0)
         
-        # Sync directory
-        label1 = Gtk.Label(label="Sync Directory")
-        label1.set_halign(Gtk.Align.START)
-        label1.set_xalign(0)
-        grid.attach(label1, 0, row, 1, 1)
+        # Add sync directory row
+        sync_dir_row = self._create_action_row(
+            "Sync Directory",
+            str(config.sync_directory)
+        )
+        dir_button = Gtk.Button(label="Choose…")
+        dir_button.connect("clicked", self._on_choose_directory)
+        dir_button.set_valign(Gtk.Align.CENTER)
+        sync_dir_row.pack_end(dir_button, False, False, 0)
+        self.sync_dir_subtitle = sync_dir_row.get_children()[0].get_children()[1]
+        sync_group.add(sync_dir_row)
         
-        self.sync_dir_button = Gtk.FileChooserButton(title="Select Sync Directory")
-        self.sync_dir_button.set_action(Gtk.FileChooserAction.SELECT_FOLDER)
-        self.sync_dir_button.set_filename(str(config.sync_directory))
-        self.sync_dir_button.connect("file-set", self._on_sync_dir_changed)
-        self.sync_dir_button.set_hexpand(True)
-        grid.attach(self.sync_dir_button, 1, row, 1, 1)
-        
-        row += 1
-        
-        # Sync interval
-        label2 = Gtk.Label(label="Sync Interval")
-        label2.set_halign(Gtk.Align.START)
-        label2.set_xalign(0)
-        grid.attach(label2, 0, row, 1, 1)
-        
-        interval_box = Gtk.Box(spacing=6)
+        # Add sync interval row
+        interval_row = self._create_action_row(
+            "Sync Interval (seconds)",
+            "Time between synchronization checks"
+        )
         adjustment = Gtk.Adjustment(value=config.sync_interval, lower=60, upper=86400, step_increment=60)
         self.interval_spin = Gtk.SpinButton(adjustment=adjustment)
+        self.interval_spin.set_valign(Gtk.Align.CENTER)
         self.interval_spin.connect("value-changed", self._on_interval_changed)
-        interval_box.pack_start(self.interval_spin, False, False, 0)
         
-        seconds_label = Gtk.Label(label="seconds")
-        seconds_label.set_halign(Gtk.Align.START)
-        interval_box.pack_start(seconds_label, False, False, 0)
+        interval_row.pack_end(self.interval_spin, False, False, 0)
+        sync_group.add(interval_row)
         
-        grid.attach(interval_box, 1, row, 1, 1)
+        # Application Settings Group
+        app_group = self._create_preferences_group(
+            "Application",
+            "General application preferences"
+        )
+        main_box.pack_start(app_group, False, False, 0)
         
-        row += 1
-        
-        # Log level
-        label3 = Gtk.Label(label="Log Level")
-        label3.set_halign(Gtk.Align.START)
-        label3.set_xalign(0)
-        grid.attach(label3, 0, row, 1, 1)
+        # Add log level row
+        log_level_row = self._create_action_row(
+            "Log Level",
+            "Detail level for log messages"
+        )
         
         self.log_level_combo = Gtk.ComboBoxText()
-        self.log_level_combo.set_entry_text_column(0)
-        log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-        for level in log_levels:
+        self.log_level_combo.set_valign(Gtk.Align.CENTER)
+        log_level_names = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+        for level in log_level_names:
             self.log_level_combo.append_text(level)
         
         # Set current log level
         current_level = config.log_level
-        for i, level in enumerate(log_levels):
+        for i, level in enumerate(log_level_names):
             if level == current_level:
                 self.log_level_combo.set_active(i)
                 break
         
         self.log_level_combo.connect("changed", self._on_log_level_changed)
-        grid.attach(self.log_level_combo, 1, row, 1, 1)
+        log_level_row.pack_end(self.log_level_combo, False, False, 0)
+        app_group.add(log_level_row)
         
-        row += 1
-        
-        # Splash screen checkbox
-        label4 = Gtk.Label(label="Splash Screen")
-        label4.set_halign(Gtk.Align.START)
-        label4.set_xalign(0)
-        grid.attach(label4, 0, row, 1, 1)
-        
-        self.show_splash_check = Gtk.CheckButton(label="Display on startup")
-        self.show_splash_check.set_active(config.show_splash)
-        self.show_splash_check.connect("toggled", self._on_show_splash_changed)
-        grid.attach(self.show_splash_check, 1, row, 1, 1)
+        # Add splash screen switch row
+        splash_row = self._create_switch_row(
+            "Splash Screen",
+            "Display splash screen on startup"
+        )
+        self.splash_switch = Gtk.Switch()
+        self.splash_switch.set_valign(Gtk.Align.CENTER)
+        self.splash_switch.set_active(config.show_splash)
+        self.splash_switch.connect("notify::active", self._on_show_splash_changed)
+        splash_row.pack_end(self.splash_switch, False, False, 0)
+        app_group.add(splash_row)
         
         # Mark initialization as complete
         self._initializing = False
         
         self.show_all()
     
-    def _on_sync_dir_changed(self, widget) -> None:
-        """Handle sync directory change."""
+    def _create_preferences_group(self, title: str, description: str) -> Gtk.Box:
+        """Create a Libadwaita-style preferences group (boxed list)."""
+        group_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        
+        # Header
+        header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        header_box.set_margin_start(12)
+        
+        title_label = Gtk.Label(label=title)
+        title_label.set_halign(Gtk.Align.START)
+        title_label.get_style_context().add_class("heading")
+        header_box.pack_start(title_label, False, False, 0)
+        
+        desc_label = Gtk.Label(label=description)
+        desc_label.set_halign(Gtk.Align.START)
+        desc_label.get_style_context().add_class("dim-label")
+        desc_label.get_style_context().add_class("caption")
+        header_box.pack_start(desc_label, False, False, 0)
+        
+        group_box.pack_start(header_box, False, False, 0)
+        
+        # Boxed list frame
+        frame = Gtk.Frame()
+        frame.set_shadow_type(Gtk.ShadowType.IN)
+        frame.get_style_context().add_class("view")
+        
+        list_box = Gtk.ListBox()
+        list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        frame.add(list_box)
+        
+        group_box.pack_start(frame, False, False, 0)
+        
+        # Store list_box reference so we can add rows
+        group_box.list_box = list_box
+        
+        return group_box
+    
+    def _create_action_row(self, title: str, subtitle: str) -> Gtk.Box:
+        """Create a Libadwaita-style action row."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row.set_margin_top(12)
+        row.set_margin_bottom(12)
+        row.set_margin_start(12)
+        row.set_margin_end(12)
+        
+        # Left side: title and subtitle
+        labels_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        labels_box.set_valign(Gtk.Align.CENTER)
+        
+        title_label = Gtk.Label(label=title)
+        title_label.set_halign(Gtk.Align.START)
+        title_label.set_xalign(0)
+        labels_box.pack_start(title_label, False, False, 0)
+        
+        subtitle_label = Gtk.Label(label=subtitle)
+        subtitle_label.set_halign(Gtk.Align.START)
+        subtitle_label.set_xalign(0)
+        subtitle_label.get_style_context().add_class("dim-label")
+        subtitle_label.get_style_context().add_class("caption")
+        labels_box.pack_start(subtitle_label, False, False, 0)
+        
+        row.pack_start(labels_box, True, True, 0)
+        
+        return row
+    
+    def _create_switch_row(self, title: str, subtitle: str) -> Gtk.Box:
+        """Create a Libadwaita-style switch row."""
+        return self._create_action_row(title, subtitle)
+    
+    def _on_choose_directory(self, button) -> None:
+        """Handle sync directory selection."""
         if self._initializing:
             return
-            
-        path = widget.get_filename()
-        if path:
+        
+        dialog = Gtk.FileChooserDialog(
+            title="Select Sync Directory",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+            buttons=(
+                "_Cancel", Gtk.ResponseType.CANCEL,
+                "_Select", Gtk.ResponseType.ACCEPT
+            )
+        )
+        dialog.set_current_folder(str(self.config.sync_directory))
+        
+        response = dialog.run()
+        path = dialog.get_filename()
+        dialog.destroy()
+        
+        if response == Gtk.ResponseType.ACCEPT and path:
             old_dir = self.config.sync_directory
             new_dir = Path(path)
             
             try:
                 # Validate and save to config
                 self.config.set('sync_directory', str(new_dir))
+                self.sync_dir_subtitle.set_text(str(new_dir))
                 logger.info(f"Sync directory changed from {old_dir} to {new_dir}")
                 
                 # Show confirmation with daemon restart option
                 if DialogHelper.show_restart_prompt(
-                    self.get_transient_for(),
+                    self.parent_window,
                     "Sync Directory Changed",
                     f"Sync directory changed to:\n{new_dir}\n\n"
                     "The daemon needs to be restarted for this change to take effect."
@@ -403,9 +520,9 @@ class SettingsDialog(Gtk.Dialog):
                     
             except ValueError as e:
                 # Validation failed
-                DialogHelper.show_error(self, f"Invalid sync directory: {e}")
+                DialogHelper.show_error(self.parent_window, f"Invalid sync directory: {e}")
                 # Revert to old value
-                self.sync_dir_button.set_filename(str(old_dir))
+                self.sync_dir_subtitle.set_text(str(old_dir))
     
     def _on_interval_changed(self, widget) -> None:
         """Handle sync interval change."""
@@ -419,9 +536,8 @@ class SettingsDialog(Gtk.Dialog):
             logger.info(f"Sync interval changed to {value} seconds")
             
             # Show confirmation with daemon restart option
-            # Show confirmation with daemon restart option
             if DialogHelper.show_restart_prompt(
-                self.get_transient_for(),
+                self.parent_window,
                 "Sync Interval Changed",
                 f"Sync interval changed to {value} seconds.\n\n"
                 "The daemon needs to be restarted for this change to take effect."
@@ -430,7 +546,7 @@ class SettingsDialog(Gtk.Dialog):
                 
         except ValueError as e:
             # Validation failed
-            DialogHelper.show_error(self, f"Invalid sync interval: {e}")
+            DialogHelper.show_error(self.parent_window, f"Invalid sync interval: {e}")
             # Revert to old value
             self.interval_spin.set_value(self.config.sync_interval)
     
@@ -438,7 +554,7 @@ class SettingsDialog(Gtk.Dialog):
         """Handle log level change."""
         if self._initializing:
             return
-            
+        
         log_level = widget.get_active_text()
         if log_level:
             try:
@@ -447,35 +563,27 @@ class SettingsDialog(Gtk.Dialog):
                 
                 # Apply the log level immediately to GUI
                 setup_logging(level=log_level, log_file=self.config.log_path)
-                logger.info(f"Log level changed to {log_level} via GUI")
+                logger.info(f"Log level changed to {log_level}")
                 
                 # Show confirmation with daemon restart option
                 if DialogHelper.show_restart_prompt(
-                    self.get_transient_for(),
+                    self.parent_window,
                     "Log Level Changed",
                     f"Log level changed to {log_level}.\n\n"
-                    "The GUI is now using the new log level.\n"
-                    "The daemon needs to be restarted to apply the change."
+                    "The daemon needs to be restarted for this change to take effect."
                 ):
                     self.parent_window._restart_daemon()
-                
+                    
             except ValueError as e:
                 # Validation failed
-                DialogHelper.show_error(self, f"Invalid log level: {e}")
-                # Revert to old value
-                old_level = self.config.log_level
-                log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
-                for i, level in enumerate(log_levels):
-                    if level == old_level:
-                        self.log_level_combo.set_active(i)
-                        break
+                DialogHelper.show_error(self.parent_window, f"Invalid log level: {e}")
     
-    def _on_show_splash_changed(self, widget) -> None:
+    def _on_show_splash_changed(self, widget, _pspec) -> None:
         """Handle show splash screen toggle."""
         if self._initializing:
             return
         
-        show_splash = widget.get_active()
+        show_splash = self.splash_switch.get_active()
         
         try:
             self.config.set('show_splash', show_splash)
@@ -483,7 +591,7 @@ class SettingsDialog(Gtk.Dialog):
             logger.info(f"Splash screen {status}")
             
             DialogHelper.show_info(
-                self.get_transient_for(),
+                self.parent_window,
                 "Splash Screen Setting Changed",
                 f"Splash screen has been {status}.\n\n"
                 f"This will take effect the next time you launch the GUI."
