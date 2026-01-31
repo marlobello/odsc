@@ -17,6 +17,7 @@ from ..config import Config
 from ..onedrive_client import OneDriveClient
 from ..logging_config import setup_logging
 from ..path_utils import sanitize_onedrive_path, validate_sync_path, SecurityError
+from ..services.file_cache_service import FileCacheService
 from .dialogs import DialogHelper
 from .menu_bar import MenuBarMixin
 from .file_tree_view import FileTreeViewMixin
@@ -539,39 +540,15 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                     
                     changes, new_delta_token = self.client.get_delta(delta_token)
                     
-                    for item in changes:
-                        if item.get('deleted'):
-                            item_id = item['id']
-                            for path in list(file_cache.keys()):
-                                if file_cache[path].get('id') == item_id:
-                                    del file_cache[path]
-                                    break
-                        else:
-                            try:
-                                parent_path = item.get('parentReference', {}).get('path', '')
-                                name = item.get('name', '')
-                                
-                                if parent_path:
-                                    safe_parent = sanitize_onedrive_path(parent_path)
-                                    full_path = str(Path(safe_parent) / name) if safe_parent else name
-                                else:
-                                    full_path = name
-                                
-                                file_cache[full_path] = item
-                            except Exception as e:
-                                logger.warning(f"Error processing change: {e}")
+                    # Use shared service to process delta changes
+                    file_cache = FileCacheService.process_delta_changes(changes, file_cache)
                     
                     state['delta_token'] = new_delta_token
                     state['file_cache'] = file_cache
                     self.config.save_state(state)
                     
-                    files = []
-                    for path, item in file_cache.items():
-                        if 'name' not in item and path:
-                            item = dict(item)
-                            item['name'] = Path(path).name
-                            item['_cache_path'] = path
-                        files.append(item)
+                    # Convert cache to file list
+                    files = FileCacheService.cache_to_file_list(file_cache)
                     logger.info(f"Delta refresh complete: {len(changes)} changes, {len(files)} total items")
                 else:
                     logger.info("Initial load: fetching all files")
@@ -579,22 +556,8 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                     
                     changes, new_delta_token = self.client.get_delta(None)
                     
-                    file_cache = {}
-                    for item in changes:
-                        if not item.get('deleted'):
-                            try:
-                                parent_path = item.get('parentReference', {}).get('path', '')
-                                name = item.get('name', '')
-                                
-                                if parent_path:
-                                    safe_parent = sanitize_onedrive_path(parent_path)
-                                    full_path = str(Path(safe_parent) / name) if safe_parent else name
-                                else:
-                                    full_path = name
-                                
-                                file_cache[full_path] = item
-                            except Exception as e:
-                                logger.warning(f"Error processing item: {e}")
+                    # Use shared service to build initial cache
+                    file_cache = FileCacheService.build_initial_cache(changes)
                     
                     state['delta_token'] = new_delta_token
                     state['file_cache'] = file_cache

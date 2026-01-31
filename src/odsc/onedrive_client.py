@@ -14,37 +14,12 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 import certifi
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from .path_utils import SecurityError
 
 
 logger = logging.getLogger(__name__)
-
-
-def retry_on_failure(max_retries: int = 3):
-    """Decorator to retry a function on failure with exponential backoff.
-    
-    Args:
-        max_retries: Maximum number of retry attempts
-    """
-    def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            last_error = None
-            for attempt in range(max_retries):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_error = e
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                        logger.warning(f"{func.__name__} attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
-                        time.sleep(wait_time)
-                    else:
-                        logger.error(f"{func.__name__} failed after {max_retries} attempts: {e}")
-            raise Exception(f"{func.__name__} failed after {max_retries} attempts: {last_error}")
-        return wrapper
-    return decorator
 
 
 class OneDriveClient:
@@ -471,7 +446,12 @@ class OneDriveClient:
                 temp_path.unlink()
             raise
     
-    @retry_on_failure(max_retries=3)
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=4),
+        retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
+        reraise=True
+    )
     def upload_file(self, local_path: Path, remote_path: str) -> Dict[str, Any]:
         """Upload file to OneDrive with retry logic.
         
