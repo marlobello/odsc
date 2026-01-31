@@ -45,7 +45,8 @@ if command -v apt-get &> /dev/null; then
         python3-send2trash \
         python3-cryptography \
         python3-keyring \
-        python3-certifi
+        python3-certifi \
+        python3-tenacity
     echo "✓ All system dependencies and Python packages installed"
 elif command -v dnf &> /dev/null; then
     echo "Detected Fedora/RHEL system"
@@ -61,7 +62,8 @@ elif command -v dnf &> /dev/null; then
         python3-send2trash \
         python3-cryptography \
         python3-keyring \
-        python3-certifi
+        python3-certifi \
+        python3-tenacity
     echo "✓ All system dependencies and Python packages installed"
 else
     echo "Warning: Could not detect package manager."
