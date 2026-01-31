@@ -69,9 +69,11 @@ class SplashScreen(Gtk.Window):
         # Add loading dots (only visible in splash mode, not About dialog)
         if not show_close_button:
             self.dots_label = Gtk.Label()
-            self.dots_label.set_markup('<span size="small" foreground="#999999"> </span>')
+            # Pre-allocate space for 3 dots to prevent bouncing, use larger font
+            self.dots_label.set_markup('<span size="large" foreground="#999999" font_family="monospace">   </span>')
             self.dots_label.set_halign(Gtk.Align.CENTER)
-            vbox.pack_start(self.dots_label, False, False, 0)
+            self.dots_label.set_size_request(80, -1)  # Fixed width to prevent layout shift
+            vbox.pack_start(self.dots_label, False, False, 5)
             
             # Start animation
             GLib.timeout_add(400, self._animate_dots)
@@ -173,9 +175,18 @@ class SplashScreen(Gtk.Window):
         if not self.animation_active or not self.dots_label:
             return False
         
-        # Cycle through 0, 1, 2, 3 dots
-        dots = "." * self.dot_count
-        self.dots_label.set_markup(f'<span size="small" foreground="#999999">{dots}</span>')
+        # Cycle through dots, always using 3 character spaces to prevent bouncing
+        # "   " → ".  " → ".. " → "..."
+        if self.dot_count == 0:
+            dots = "   "
+        elif self.dot_count == 1:
+            dots = ".  "
+        elif self.dot_count == 2:
+            dots = ".. "
+        else:  # self.dot_count == 3
+            dots = "..."
+        
+        self.dots_label.set_markup(f'<span size="large" foreground="#999999" font_family="monospace">{dots}</span>')
         
         self.dot_count = (self.dot_count + 1) % 4
         return True
