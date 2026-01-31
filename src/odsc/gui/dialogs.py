@@ -276,60 +276,73 @@ class AuthInfoDialog(Gtk.Dialog):
 
 
 class SettingsDialog(Gtk.Dialog):
-    """Settings dialog."""
+    """Settings dialog with GNOME-style layout."""
     
     def __init__(self, parent, config: Config):
         """Initialize dialog."""
-        Gtk.Dialog.__init__(self, title="Settings", transient_for=parent, flags=0)
+        Gtk.Dialog.__init__(self, title="Preferences", transient_for=parent, flags=0)
         self.add_buttons("Close", Gtk.ResponseType.CLOSE)
         
         self.parent_window = parent
         self.config = config
-        self.set_default_size(400, 200)
+        self.set_default_size(500, 300)
+        self.set_border_width(12)
         
         # Track if we're initializing to avoid triggering change handlers
         self._initializing = True
         
         box = self.get_content_area()
-        box.set_spacing(10)
+        box.set_spacing(18)
+        
+        # Use Grid for GNOME-style two-column layout
+        grid = Gtk.Grid()
+        grid.set_column_spacing(12)
+        grid.set_row_spacing(12)
+        box.add(grid)
+        
+        row = 0
         
         # Sync directory
-        hbox1 = Gtk.Box(spacing=6)
-        label1 = Gtk.Label(label="Sync Directory:")
-        label1.set_width_chars(20)
-        label1.set_halign(Gtk.Align.END)
-        hbox1.pack_start(label1, False, False, 0)
+        label1 = Gtk.Label(label="Sync Directory")
+        label1.set_halign(Gtk.Align.START)
+        label1.set_xalign(0)
+        grid.attach(label1, 0, row, 1, 1)
         
         self.sync_dir_button = Gtk.FileChooserButton(title="Select Sync Directory")
         self.sync_dir_button.set_action(Gtk.FileChooserAction.SELECT_FOLDER)
         self.sync_dir_button.set_filename(str(config.sync_directory))
         self.sync_dir_button.connect("file-set", self._on_sync_dir_changed)
-        hbox1.pack_start(self.sync_dir_button, True, True, 0)
+        self.sync_dir_button.set_hexpand(True)
+        grid.attach(self.sync_dir_button, 1, row, 1, 1)
         
-        box.add(hbox1)
+        row += 1
         
         # Sync interval
-        hbox2 = Gtk.Box(spacing=6)
-        label2 = Gtk.Label(label="Sync Interval (sec):")
-        label2.set_width_chars(20)
-        label2.set_halign(Gtk.Align.END)
-        hbox2.pack_start(label2, False, False, 0)
+        label2 = Gtk.Label(label="Sync Interval")
+        label2.set_halign(Gtk.Align.START)
+        label2.set_xalign(0)
+        grid.attach(label2, 0, row, 1, 1)
         
+        interval_box = Gtk.Box(spacing=6)
         adjustment = Gtk.Adjustment(value=config.sync_interval, lower=60, upper=86400, step_increment=60)
         self.interval_spin = Gtk.SpinButton(adjustment=adjustment)
         self.interval_spin.connect("value-changed", self._on_interval_changed)
-        hbox2.pack_start(self.interval_spin, False, False, 0)
+        interval_box.pack_start(self.interval_spin, False, False, 0)
         
-        box.add(hbox2)
+        seconds_label = Gtk.Label(label="seconds")
+        seconds_label.set_halign(Gtk.Align.START)
+        interval_box.pack_start(seconds_label, False, False, 0)
+        
+        grid.attach(interval_box, 1, row, 1, 1)
+        
+        row += 1
         
         # Log level
-        hbox3 = Gtk.Box(spacing=6)
-        label3 = Gtk.Label(label="Log Level:")
-        label3.set_width_chars(20)
-        label3.set_halign(Gtk.Align.END)
-        hbox3.pack_start(label3, False, False, 0)
+        label3 = Gtk.Label(label="Log Level")
+        label3.set_halign(Gtk.Align.START)
+        label3.set_xalign(0)
+        grid.attach(label3, 0, row, 1, 1)
         
-        # Create combo box for log levels using ComboBoxText
         self.log_level_combo = Gtk.ComboBoxText()
         self.log_level_combo.set_entry_text_column(0)
         log_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
@@ -343,25 +356,21 @@ class SettingsDialog(Gtk.Dialog):
                 self.log_level_combo.set_active(i)
                 break
         
-        # Connect to changed signal AFTER setting initial value to avoid triggering on init
         self.log_level_combo.connect("changed", self._on_log_level_changed)
-        hbox3.pack_start(self.log_level_combo, False, False, 0)
+        grid.attach(self.log_level_combo, 1, row, 1, 1)
         
-        box.add(hbox3)
+        row += 1
         
-        # Show splash screen checkbox
-        hbox4 = Gtk.Box(spacing=6)
-        label4 = Gtk.Label(label="Splash Screen:")
-        label4.set_width_chars(20)
-        label4.set_halign(Gtk.Align.END)
-        hbox4.pack_start(label4, False, False, 0)
+        # Splash screen checkbox
+        label4 = Gtk.Label(label="Splash Screen")
+        label4.set_halign(Gtk.Align.START)
+        label4.set_xalign(0)
+        grid.attach(label4, 0, row, 1, 1)
         
         self.show_splash_check = Gtk.CheckButton(label="Display on startup")
         self.show_splash_check.set_active(config.show_splash)
         self.show_splash_check.connect("toggled", self._on_show_splash_changed)
-        hbox4.pack_start(self.show_splash_check, False, False, 0)
-        
-        box.add(hbox4)
+        grid.attach(self.show_splash_check, 1, row, 1, 1)
         
         # Mark initialization as complete
         self._initializing = False
