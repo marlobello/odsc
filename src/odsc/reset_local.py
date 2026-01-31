@@ -6,12 +6,12 @@ WARNING: This is a destructive operation!
 This utility will:
 1. Stop the ODSC daemon (if running)
 2. Delete ALL files and folders in the sync directory
-3. Clear the sync state file (cache, delta token, file states)
+3. Clear the sync state database (SQLite and any legacy JSON)
 4. Keep authentication token intact
 5. Optionally restart the daemon to re-sync from OneDrive
 
 Use this when local state becomes corrupted or out of sync with OneDrive.
-OneDrive is treated as the authoritative source.
+OneDrive will be treated as the authoritative source.
 """
 
 import argparse
@@ -125,38 +125,52 @@ def delete_sync_directory(sync_dir: Path, dry_run: bool = False) -> tuple[int, i
     return file_count, folder_count
 
 
-def clear_sync_state(state_path: Path, dry_run: bool = False) -> bool:
-    """Clear sync state file (keep auth token).
+def clear_sync_state(config: Config, dry_run: bool = False) -> bool:
+    """Clear sync state (SQLite database and any leftover JSON).
     
     Args:
-        state_path: Path to sync_state.json
+        config: Config instance
         dry_run: If True, only show what would be cleared
         
     Returns:
         True if successful, False otherwise
     """
-    if not state_path.exists():
-        print(f"  State file doesn't exist: {state_path}")
-        return True
+    # Clear SQLite database
+    if config.state_db_path.exists():
+        if dry_run:
+            print(f"  Would delete SQLite database: {config.state_db_path}")
+            # Also check for WAL files
+            wal_file = config.state_db_path.with_suffix('.db-wal')
+            shm_file = config.state_db_path.with_suffix('.db-shm')
+            if wal_file.exists():
+                print(f"  Would delete WAL file: {wal_file}")
+            if shm_file.exists():
+                print(f"  Would delete SHM file: {shm_file}")
+        else:
+            config.state_db_path.unlink()
+            print(f"  ✓ Deleted SQLite database: {config.state_db_path}")
+            
+            # Clean up WAL files
+            wal_file = config.state_db_path.with_suffix('.db-wal')
+            shm_file = config.state_db_path.with_suffix('.db-shm')
+            if wal_file.exists():
+                wal_file.unlink()
+                print(f"  ✓ Deleted WAL file")
+            if shm_file.exists():
+                shm_file.unlink()
+                print(f"  ✓ Deleted SHM file")
+    else:
+        print(f"  SQLite database doesn't exist: {config.state_db_path}")
     
-    if dry_run:
-        print(f"  Would clear state file: {state_path}")
-        return True
+    # Clean up any leftover JSON file
+    json_path = config.config_dir / "sync_state.json"
+    if json_path.exists():
+        if dry_run:
+            print(f"  Would delete legacy JSON: {json_path}")
+        else:
+            json_path.unlink()
+            print(f"  ✓ Deleted legacy JSON file")
     
-    # Create minimal empty state
-    import json
-    empty_state = {
-        'delta_token': None,
-        'file_cache': {},
-        'files': {},
-        'last_sync': None
-    }
-    
-    with open(state_path, 'w') as f:
-        json.dump(empty_state, f, indent=2)
-    
-    state_path.chmod(0o600)
-    print(f"  ✓ Cleared state file: {state_path}")
     return True
 
 
@@ -217,7 +231,6 @@ Use this when local state becomes corrupted or out of sync.
         return 1
     
     sync_dir = config.sync_directory
-    state_path = config.state_path
     
     # Show operation summary
     if args.dry_run:
@@ -226,7 +239,7 @@ Use this when local state becomes corrupted or out of sync.
         print("=== RESETTING LOCAL SYNC STATE ===\n")
     
     print(f"Sync directory: {sync_dir}")
-    print(f"State file: {state_path}")
+    print(f"SQLite database: {config.state_db_path}")
     print()
     
     # Check if daemon is running
@@ -252,8 +265,8 @@ Use this when local state becomes corrupted or out of sync.
     
     # Clear sync state
     print("3. Clearing sync state...")
-    if not clear_sync_state(state_path, args.dry_run):
-        print("ERROR: Failed to clear state file")
+    if not clear_sync_state(config, args.dry_run):
+        print("ERROR: Failed to clear state")
         return 1
     print()
     
