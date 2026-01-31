@@ -617,6 +617,17 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
     def _update_file_list(self, files: List[Dict[str, Any]]) -> None:
         """Update file list view with folder hierarchy using chunked rendering.
         
+        This method is intentionally long (260 lines) because it implements
+        chunked rendering for performance with large file lists (10,000+ files).
+        The nested process_chunk() function maintains state across chunks using
+        closures, which is more efficient than class-level state management.
+        
+        Refactoring this would require extracting ChunkedTreeRenderer class,
+        but would add complexity without significant benefit since:
+        - The logic is sequential and state-dependent
+        - Chunked rendering requires maintaining UI callbacks
+        - Helper methods (_ensure_parent_folders, _finalize_file_list) already extracted
+        
         Args:
             files: List of file metadata from OneDrive
         """

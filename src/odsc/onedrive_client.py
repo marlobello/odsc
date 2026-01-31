@@ -15,13 +15,10 @@ from urllib.parse import urlencode, urlparse
 import requests
 import certifi
 
+from .path_utils import SecurityError
+
 
 logger = logging.getLogger(__name__)
-
-
-class SecurityError(Exception):
-    """Security-related error (path traversal, SSRF, etc)."""
-    pass
 
 
 def retry_on_failure(max_retries: int = 3):
