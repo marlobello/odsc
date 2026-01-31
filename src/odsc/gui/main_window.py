@@ -85,6 +85,47 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         self.client = OneDriveClient(client_id, token_data)
         return True
     
+    def _compare_tree_items(self, model, iter1, iter2, user_data):
+        """Compare two tree items for case-insensitive sorting.
+        
+        Folders are sorted before files, then alphabetically (case-insensitive).
+        
+        Args:
+            model: TreeModel
+            iter1: First TreeIter
+            iter2: Second TreeIter
+            user_data: User data (unused)
+            
+        Returns:
+            -1 if iter1 < iter2, 0 if equal, 1 if iter1 > iter2
+        """
+        # Column 1 is name, Column 6 is is_folder
+        name1 = model.get_value(iter1, 1)
+        name2 = model.get_value(iter2, 1)
+        is_folder1 = model.get_value(iter1, 6)
+        is_folder2 = model.get_value(iter2, 6)
+        
+        # Remove " (pending upload)" suffix for sorting
+        name1_clean = name1.replace(" (pending upload)", "")
+        name2_clean = name2.replace(" (pending upload)", "")
+        
+        # Folders before files
+        if is_folder1 and not is_folder2:
+            return -1
+        elif not is_folder1 and is_folder2:
+            return 1
+        
+        # Case-insensitive alphabetical sort
+        name1_lower = name1_clean.lower()
+        name2_lower = name2_clean.lower()
+        
+        if name1_lower < name2_lower:
+            return -1
+        elif name1_lower > name2_lower:
+            return 1
+        else:
+            return 0
+    
     def _build_ui(self) -> None:
         """Build the user interface."""
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -104,6 +145,11 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         main_content_box.pack_start(scrolled, True, True, 0)
         
         self.file_store = Gtk.TreeStore(str, str, str, str, bool, str, bool, str, str)
+        
+        # Enable case-insensitive sorting on the name column
+        self.file_store.set_sort_func(1, self._compare_tree_items, None)
+        self.file_store.set_sort_column_id(1, Gtk.SortType.ASCENDING)
+        
         self.file_tree = Gtk.TreeView(model=self.file_store)
         self.file_tree.set_enable_tree_lines(True)
         
@@ -634,7 +680,8 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                 parent = parent_ref.get('path', '') if parent_ref else ''
                 sort_path = f"{parent}/{name}"
             
-            sort_key = (not is_folder, parent, sort_path)
+            # Case-insensitive sort: folders first, then alphabetically by path
+            sort_key = (not is_folder, parent.lower(), sort_path.lower())
             items_with_keys.append((sort_key, item))
         
         # Sort once with pre-computed keys
