@@ -119,6 +119,21 @@ class Config:
             logger.error(f"Failed to initialize SQLite backend: {e}")
             raise RuntimeError("SQLite backend initialization failed") from e
     
+    def close(self) -> None:
+        """Close state backend and release resources."""
+        if self._backend is not None:
+            try:
+                self._backend.close()
+                logger.debug("State backend closed")
+            except Exception as e:
+                logger.warning(f"Error closing state backend: {e}")
+            finally:
+                self._backend = None
+    
+    def __del__(self):
+        """Destructor to ensure backend is closed."""
+        self.close()
+    
     def save(self) -> None:
         """Save configuration to file."""
         with open(self.config_path, 'w') as f:

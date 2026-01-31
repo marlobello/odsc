@@ -193,6 +193,12 @@ class SyncDaemon:
         if self._sync_thread:
             self._sync_thread.join(timeout=5)
         
+        # Close config and state backend to release resources
+        try:
+            self.config.close()
+        except Exception as e:
+            logger.warning(f"Error closing config: {e}")
+        
         logger.info("Sync daemon stopped")
     
     def _start_system_tray(self):
@@ -613,6 +619,38 @@ class SyncDaemon:
                    f"{sync_count['upload']} uploaded, {sync_count['download']} downloaded, "
                    f"{sync_count['skip']} skipped, {sync_count['conflict']} conflicts, "
                    f"{sync_count['recycle']} recycled ({len(processed)} total processed)")
+        
+        # Cleanup stale state entries (files deleted locally that no longer exist remotely)
+        self._cleanup_stale_state(local_files, all_remote_files)
+    
+    def _cleanup_stale_state(self, local_files: Dict, all_remote_files: Dict) -> None:
+        """Remove stale entries from sync state.
+        
+        Removes state entries for files that:
+        - Don't exist locally (user deleted them)
+        - Don't exist remotely (deleted from OneDrive)
+        
+        This prevents unbounded state growth from files that were once synced
+        but are now gone from both sides.
+        
+        Args:
+            local_files: Dict of local files
+            all_remote_files: Dict of all remote files
+        """
+        stale_paths = []
+        
+        for path in self.state.get('files', {}).keys():
+            # If file exists locally or remotely, keep the state
+            if path in local_files or path in all_remote_files:
+                continue
+            
+            # File doesn't exist on either side - state is stale
+            stale_paths.append(path)
+        
+        if stale_paths:
+            for path in stale_paths:
+                del self.state['files'][path]
+            logger.debug(f"Cleaned up {len(stale_paths)} stale state entries")
     
     def _execute_sync_action(self, action: str, rel_path: str, sync_dir: Path, 
                             local_info: Optional[Dict], remote_info: Optional[Dict]) -> None:
