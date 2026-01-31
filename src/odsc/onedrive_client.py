@@ -402,7 +402,12 @@ class OneDriveClient:
             logger.debug(f"File not found on OneDrive: {remote_path}")
             return None
     
-    @retry_on_failure(max_retries=3)
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=4),
+        retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
+        reraise=True
+    )
     def download_file(self, file_id: str, local_path: Path) -> Dict[str, Any]:
         """Download file from OneDrive with retry logic.
         
