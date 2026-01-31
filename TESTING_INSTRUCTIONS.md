@@ -183,7 +183,7 @@ Then watch the logs to see sync start.
 
 1. Check daemon is running latest code:
    ```bash
-   ./diagnose_deletion.sh
+   ./tests/diagnose_deletion.sh
    ```
 
 2. Restart daemon:
@@ -198,20 +198,20 @@ Then watch the logs to see sync start.
 
 4. Run comprehensive test suite:
    ```bash
-   python3 test_sync_scenarios.py
+   python3 tests/test_sync_scenarios.py
    ```
 
 5. Report findings with:
    - Log excerpts showing the problem
    - Contents of `sync_test_results.txt` (created by test suite)
-   - Output of `./diagnose_deletion.sh`
+   - Output of `./tests/diagnose_deletion.sh`
 
 ---
 
 ## Files Created
 
-- `test_sync_scenarios.py` - Comprehensive interactive test suite
-- `check_sync_status.sh` - Quick status checker
-- `diagnose_deletion.sh` - Deletion-specific diagnostic
+- `tests/test_sync_scenarios.py` - Comprehensive interactive test suite
+- `tests/check_sync_status.sh` - Quick status checker
+- `tests/diagnose_deletion.sh` - Deletion-specific diagnostic
 - `TESTING_INSTRUCTIONS.md` - This file
 
