@@ -29,6 +29,10 @@ class SplashScreen(Gtk.Window):
         self.set_default_size(450, 350)
         self.set_resizable(False)
         
+        self.show_close_button = show_close_button
+        self.animation_active = not show_close_button  # Only animate on initial load
+        self.dot_count = 0
+        
         if show_close_button:
             # About dialog mode: show minimal decorations with close button
             self.set_decorated(True)
@@ -61,6 +65,18 @@ class SplashScreen(Gtk.Window):
         subtitle_label.set_halign(Gtk.Align.CENTER)
         subtitle_label.set_line_wrap(True)
         vbox.pack_start(subtitle_label, False, False, 0)
+        
+        # Add loading dots (only visible in splash mode, not About dialog)
+        if not show_close_button:
+            self.dots_label = Gtk.Label()
+            self.dots_label.set_markup('<span size="small" foreground="#999999"> </span>')
+            self.dots_label.set_halign(Gtk.Align.CENTER)
+            vbox.pack_start(self.dots_label, False, False, 0)
+            
+            # Start animation
+            GLib.timeout_add(400, self._animate_dots)
+        else:
+            self.dots_label = None
         
         # Add links section
         links_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -148,12 +164,29 @@ class SplashScreen(Gtk.Window):
         logger.warning("Could not find ODSC logo for splash screen - splash will show without logo")
         return None
     
+    def _animate_dots(self) -> bool:
+        """Animate the loading dots.
+        
+        Returns:
+            True to continue animation, False to stop
+        """
+        if not self.animation_active or not self.dots_label:
+            return False
+        
+        # Cycle through 0, 1, 2, 3 dots
+        dots = "." * self.dot_count
+        self.dots_label.set_markup(f'<span size="small" foreground="#999999">{dots}</span>')
+        
+        self.dot_count = (self.dot_count + 1) % 4
+        return True
+    
     def close_splash(self) -> bool:
         """Close the splash screen.
         
         Returns:
             False to stop the timeout
         """
+        self.animation_active = False  # Stop animation
         self.hide()
         self.destroy()
         logger.debug("Splash screen closed")
