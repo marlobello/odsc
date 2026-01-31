@@ -100,10 +100,26 @@ When the sync daemon is running, an icon appears in the GNOME taskbar with quick
 > **Note:** System tray requires a graphical environment. Headless/server installations run without the tray icon.
 
 ### Safety Features
+
+**ODSC will NEVER delete files from OneDrive automatically.**
+
 - **Remote deletions** → Local files moved to trash (not permanently deleted)
-- **Local deletions** → Files remain on OneDrive (prevents accidental loss)
+- **Local deletions** → **Files remain on OneDrive** (prevents accidental loss)
 - **Conflicts** → Both versions kept (`.conflict` file created)
 - **"Do No Harm"** → Design priority is to never destroy or lose OneDrive data
+
+#### Deletion Behavior
+
+| Scenario | What Happens | OneDrive Status |
+|----------|-------------|-----------------|
+| You delete a file locally | Sync daemon detects deletion and **skips** it | ✅ File remains on OneDrive |
+| You delete a file on OneDrive | Sync daemon moves local copy to trash | File already deleted |
+| You delete a folder locally | Sync daemon **does not sync the deletion** | ✅ Folder remains on OneDrive |
+| You delete a folder on OneDrive | Sync daemon removes local copy | Folder already deleted |
+
+**Key Principle:** Local deletions are **never propagated** to OneDrive. Only additions and modifications sync bidirectionally. This prevents accidental data loss.
+
+To delete files from OneDrive, use the web interface or official Microsoft clients.
 
 > [!WARNING]
 > Large-scale folder organizational changes (mass renames, deep restructuring) on the Linux side have not been extensively tested and are generally not recommended. This tool is designed to provide **simple and reliable file syncing capabilities**, not complex file management operations. For major organizational changes, use the OneDrive web interface or official clients.
