@@ -788,62 +788,8 @@ class SyncDaemon:
     def _finalize_sync(self) -> None:
         """Finalize sync by updating state and cleaning up."""
         self.state['last_sync'] = datetime.now().isoformat()
-        
-        # Clean up stale cache entries periodically
-        self._cleanup_stale_cache_entries()
-        
         self.config.save_state(self.state)
         self._cleanup_recycle_bin()
-    
-    def _cleanup_stale_cache_entries(self) -> None:
-        """Remove cache entries for files that no longer exist locally or remotely.
-        
-        This prevents the cache from growing indefinitely with deleted files.
-        Only runs every 10 syncs to avoid performance impact.
-        """
-        # Only cleanup every 10th sync
-        sync_count = self.state.get('sync_count', 0) + 1
-        self.state['sync_count'] = sync_count
-        
-        if sync_count % 10 != 0:
-            return
-        
-        import time
-        start_time = time.time()
-        
-        # Get list of all local files (relative paths)
-        sync_dir = self.config.sync_directory
-        local_paths = set()
-        for path in sync_dir.rglob('*'):
-            if any(part.startswith('.') for part in path.parts):
-                continue
-            try:
-                local_paths.add(str(path.relative_to(sync_dir)))
-            except (OSError, ValueError):
-                pass
-        
-        # Check cache entries
-        stale_entries = []
-        for cached_path in list(self.state['file_cache'].keys()):
-            # Skip if exists locally
-            if cached_path in local_paths:
-                continue
-            
-            # Skip if in tracking state (being synced)
-            if cached_path in self.state.get('files', {}):
-                continue
-            
-            # This is a stale entry - was deleted both locally and remotely
-            stale_entries.append(cached_path)
-        
-        # Remove stale entries
-        for path in stale_entries:
-            del self.state['file_cache'][path]
-        
-        elapsed = time.time() - start_time
-        if stale_entries:
-            logger.info(f"Cleaned up {len(stale_entries)} stale cache entries in {elapsed:.2f}s "
-                       f"(cache size: {len(self.state['file_cache'])} entries)")
     
     def _move_to_recycle_bin(self, local_path: Path, rel_path: str) -> None:
         """Move file or folder to system recycle bin/trash.
