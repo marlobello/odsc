@@ -285,7 +285,7 @@ class SettingsDialog(Gtk.Dialog):
         
         self.parent_window = parent
         self.config = config
-        self.set_default_size(600, 450)
+        self.set_default_size(600, 400)
         self.set_border_width(0)  # No border for modern look
         
         # Track if we're initializing to avoid triggering change handlers
@@ -293,22 +293,16 @@ class SettingsDialog(Gtk.Dialog):
         
         box = self.get_content_area()
         box.set_spacing(0)
-        box.set_margin_top(24)
-        box.set_margin_bottom(24)
+        box.set_margin_top(18)
+        box.set_margin_bottom(18)
         box.set_margin_start(24)
         box.set_margin_end(24)
         
-        # Create scrolled window for preferences
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_propagate_natural_height(True)
-        box.pack_start(scrolled, True, True, 0)
-        
-        # Main container
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        # Main container (no scrolling needed)
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         main_box.set_halign(Gtk.Align.CENTER)
         main_box.set_size_request(540, -1)  # Clamp width like Adw
-        scrolled.add(main_box)
+        box.pack_start(main_box, True, True, 0)
         
         # Sync Settings Group
         sync_group = self._create_preferences_group(
@@ -331,22 +325,15 @@ class SettingsDialog(Gtk.Dialog):
         
         # Add sync interval row
         interval_row = self._create_action_row(
-            "Sync Interval",
+            "Sync Interval (seconds)",
             "Time between synchronization checks"
         )
-        interval_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         adjustment = Gtk.Adjustment(value=config.sync_interval, lower=60, upper=86400, step_increment=60)
         self.interval_spin = Gtk.SpinButton(adjustment=adjustment)
         self.interval_spin.set_valign(Gtk.Align.CENTER)
         self.interval_spin.connect("value-changed", self._on_interval_changed)
-        interval_box.pack_start(self.interval_spin, False, False, 0)
         
-        seconds_label = Gtk.Label(label="seconds")
-        seconds_label.set_valign(Gtk.Align.CENTER)
-        seconds_label.get_style_context().add_class("dim-label")
-        interval_box.pack_start(seconds_label, False, False, 0)
-        
-        interval_row.pack_end(interval_box, False, False, 0)
+        interval_row.pack_end(self.interval_spin, False, False, 0)
         sync_group.add(interval_row)
         
         # Application Settings Group
