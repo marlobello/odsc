@@ -61,6 +61,7 @@ from cryptography.fernet import Fernet, InvalidToken
 import keyring
 
 from .validators import validate_config_value, ValidationError
+from .backends import StateBackend, JsonStateBackend, SqliteStateBackend
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class Config:
     CONFIG_FILE = "config.json"
     TOKEN_FILE = ".onedrive_token"
     STATE_FILE = "sync_state.json"
+    STATE_DB = "sync_state.db"  # SQLite database file
     LOG_FILE = "odsc.log"
     FORCE_SYNC_FILE = ".force_sync"
     
@@ -88,11 +90,14 @@ class Config:
         self.config_path = self.config_dir / self.CONFIG_FILE
         self.token_path = self.config_dir / self.TOKEN_FILE
         self.state_path = self.config_dir / self.STATE_FILE
+        self.state_db_path = self.config_dir / self.STATE_DB
         self.log_path = self.config_dir / self.LOG_FILE
         self.force_sync_path = self.config_dir / self.FORCE_SYNC_FILE
         
         self._config: Dict[str, Any] = {}
+        self._backend: Optional[StateBackend] = None
         self.load()
+        self._init_backend()
     
     def load(self) -> None:
         """Load configuration from file."""
@@ -111,6 +116,23 @@ class Config:
             }
             self.save()
             logger.debug(f"Created default config at {self.config_path}")
+    
+    def _init_backend(self) -> None:
+        """Initialize state storage backend.
+        
+        Uses SQLite by default. Falls back to JSON if SQLite creation fails.
+        """
+        if self._backend is not None:
+            return
+        
+        # Always use SQLite for new installations
+        try:
+            self._backend = SqliteStateBackend(self.state_db_path)
+            logger.info(f"Using SQLite backend: {self.state_db_path}")
+        except Exception as e:
+            logger.error(f"Failed to initialize SQLite backend: {e}")
+            logger.warning("Falling back to JSON backend")
+            self._backend = JsonStateBackend(self.state_path)
     
     def save(self) -> None:
         """Save configuration to file."""
@@ -299,50 +321,37 @@ class Config:
             return None
     
     def save_state(self, state_data: Dict[str, Any]) -> None:
-        """Save sync state with file locking to prevent corruption.
+        """Save sync state using backend.
         
         Args:
             state_data: State data dictionary
         """
-        # Use exclusive lock to prevent concurrent writes
-        with open(self.state_path, 'w') as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            try:
-                json.dump(state_data, f, indent=2)
-                f.flush()  # Ensure data is written
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        if self._backend is None:
+            self._init_backend()
         
-        # Secure file permissions (owner read/write only)
-        self.state_path.chmod(0o600)
+        try:
+            self._backend.save(state_data)
+        except Exception as e:
+            logger.error(f"Failed to save state: {e}")
+            raise
     
     def load_state(self) -> Dict[str, Any]:
-        """Load sync state with file locking.
+        """Load sync state using backend.
         
         Returns:
             State data dictionary
         """
-        if self.state_path.exists():
-            try:
-                with open(self.state_path, 'r') as f:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-                    try:
-                        return json.load(f)
-                    finally:
-                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-            except json.JSONDecodeError as e:
-                logger.error(f"State file corrupted, resetting: {e}")
-                # Return default state if file is corrupted
-                return {
-                    'files': {}, 
-                    'last_sync': None,
-                    'delta_token': None,
-                    'file_cache': {},
-                }
+        if self._backend is None:
+            self._init_backend()
         
-        return {
-            'files': {}, 
-            'last_sync': None,
-            'delta_token': None,  # For incremental OneDrive sync
-            'file_cache': {},  # Cache of remote file metadata
-        }
+        try:
+            return self._backend.load()
+        except Exception as e:
+            logger.error(f"Failed to load state: {e}")
+            # Return default state on error
+            return {
+                'files': {}, 
+                'file_cache': {},
+                'last_sync': None,
+                'delta_token': None,
+            }
