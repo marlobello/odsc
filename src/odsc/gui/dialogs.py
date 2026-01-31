@@ -92,23 +92,27 @@ class AuthInfoDialog(Gtk.Dialog):
         
         self.config = config
         self.client = client
-        self.set_default_size(500, 300)
-        self.set_border_width(10)
+        self.set_default_size(550, 400)
+        self.set_border_width(0)
         
         box = self.get_content_area()
-        box.set_spacing(10)
+        box.set_spacing(0)
+        box.set_margin_top(18)
+        box.set_margin_bottom(18)
+        box.set_margin_start(24)
+        box.set_margin_end(24)
+        
+        # Main container
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        main_box.set_halign(Gtk.Align.CENTER)
+        main_box.set_size_request(500, -1)
+        box.pack_start(main_box, True, True, 0)
         
         # Check if authenticated
         token_data = config.load_token()
         is_authenticated = token_data is not None and client is not None
         
         if is_authenticated:
-            # Show authentication info
-            title_label = Gtk.Label()
-            title_label.set_markup("<b>Authentication Status</b>")
-            title_label.set_halign(Gtk.Align.START)
-            box.add(title_label)
-            
             # Get user info from API
             user_info = None
             try:
@@ -117,76 +121,60 @@ class AuthInfoDialog(Gtk.Dialog):
             except Exception as e:
                 logger.warning(f"Could not fetch user info: {e}")
             
-            # User Name (if available)
-            if user_info and 'displayName' in user_info:
-                name_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                name_label = Gtk.Label(label="User Name:")
-                name_label.set_width_chars(15)
-                name_label.set_halign(Gtk.Align.START)
-                name_value = Gtk.Label(label=user_info['displayName'])
-                name_value.set_halign(Gtk.Align.START)
-                name_box.pack_start(name_label, False, False, 0)
-                name_box.pack_start(name_value, False, False, 0)
-                box.add(name_box)
+            # Account Information Group
+            account_group = self._create_auth_group(
+                "Account Information",
+                "Microsoft account details"
+            )
+            main_box.pack_start(account_group, False, False, 0)
             
-            # Email (if available)
+            # User Name
+            if user_info and 'displayName' in user_info:
+                name_row = self._create_info_row(
+                    "User Name",
+                    html.escape(user_info['displayName'])
+                )
+                account_group.add(name_row)
+            
+            # Email
             if user_info:
                 email = user_info.get('mail') or user_info.get('userPrincipalName')
                 if email:
-                    email_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                    email_label = Gtk.Label(label="Email:")
-                    email_label.set_width_chars(15)
-                    email_label.set_halign(Gtk.Align.START)
-                    email_value = Gtk.Label(label=email)
-                    email_value.set_halign(Gtk.Align.START)
-                    email_value.set_selectable(True)
-                    email_box.pack_start(email_label, False, False, 0)
-                    email_box.pack_start(email_value, False, False, 0)
-                    box.add(email_box)
+                    email_row = self._create_info_row(
+                        "Email",
+                        html.escape(email),
+                        selectable=True
+                    )
+                    account_group.add(email_row)
             
             # Status
-            status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            status_label = Gtk.Label(label="Status:")
-            status_label.set_width_chars(15)
-            status_label.set_halign(Gtk.Align.START)
-            status_value = Gtk.Label(label="✓ Authenticated")
-            status_value.set_halign(Gtk.Align.START)
-            status_box.pack_start(status_label, False, False, 0)
-            status_box.pack_start(status_value, False, False, 0)
-            box.add(status_box)
+            status_row = self._create_info_row(
+                "Status",
+                "✓ Authenticated"
+            )
+            account_group.add(status_row)
+            
+            # Session Information Group
+            session_group = self._create_auth_group(
+                "Session Information",
+                "Token and authentication status"
+            )
+            main_box.pack_start(session_group, False, False, 0)
             
             # Last Login Time
             if token_data and 'expires_at' in token_data and 'expires_in' in token_data:
                 import time
                 from datetime import datetime
-                # Calculate when token was created (expires_at - expires_in)
                 expires_at = token_data['expires_at']
                 expires_in = token_data['expires_in']
                 created_at = expires_at - expires_in
                 login_datetime = datetime.fromtimestamp(created_at)
                 
-                login_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                login_label = Gtk.Label(label="Last Login:")
-                login_label.set_width_chars(15)
-                login_label.set_halign(Gtk.Align.START)
-                login_value = Gtk.Label(label=login_datetime.strftime('%Y-%m-%d %H:%M:%S'))
-                login_value.set_halign(Gtk.Align.START)
-                login_box.pack_start(login_label, False, False, 0)
-                login_box.pack_start(login_value, False, False, 0)
-                box.add(login_box)
-            
-            # Application ID
-            client_id_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            client_id_label = Gtk.Label(label="Application ID:")
-            client_id_label.set_width_chars(15)
-            client_id_label.set_halign(Gtk.Align.START)
-            # Escape client ID (though it's controlled, be defensive)
-            client_id_value = Gtk.Label(label=html.escape(client.client_id if client else "Unknown"))
-            client_id_value.set_halign(Gtk.Align.START)
-            client_id_value.set_selectable(True)
-            client_id_box.pack_start(client_id_label, False, False, 0)
-            client_id_box.pack_start(client_id_value, False, False, 0)
-            box.add(client_id_box)
+                login_row = self._create_info_row(
+                    "Last Login",
+                    login_datetime.strftime('%Y-%m-%d %H:%M:%S')
+                )
+                session_group.add(login_row)
             
             # Token expiry info
             if token_data and 'expires_at' in token_data:
@@ -196,83 +184,122 @@ class AuthInfoDialog(Gtk.Dialog):
                 expires_datetime = datetime.fromtimestamp(expires_at)
                 time_remaining = expires_at - time.time()
                 
-                expiry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                expiry_label = Gtk.Label(label="Token Expires:")
-                expiry_label.set_width_chars(15)
-                expiry_label.set_halign(Gtk.Align.START)
-                
                 if time_remaining > 0:
                     hours = int(time_remaining / 3600)
                     expiry_text = f"{expires_datetime.strftime('%Y-%m-%d %H:%M')} ({hours}h remaining)"
                 else:
                     expiry_text = "Expired (will auto-refresh)"
                 
-                expiry_value = Gtk.Label(label=expiry_text)
-                expiry_value.set_halign(Gtk.Align.START)
-                expiry_box.pack_start(expiry_label, False, False, 0)
-                expiry_box.pack_start(expiry_value, False, False, 0)
-                box.add(expiry_box)
+                expiry_row = self._create_info_row(
+                    "Token Expires",
+                    expiry_text
+                )
+                session_group.add(expiry_row)
             
             # Has refresh token?
             if token_data and 'refresh_token' in token_data:
-                refresh_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-                refresh_label = Gtk.Label(label="Refresh Token:")
-                refresh_label.set_width_chars(15)
-                refresh_label.set_halign(Gtk.Align.START)
-                refresh_value = Gtk.Label(label="✓ Available")
-                refresh_value.set_halign(Gtk.Align.START)
-                refresh_box.pack_start(refresh_label, False, False, 0)
-                refresh_box.pack_start(refresh_value, False, False, 0)
-                box.add(refresh_box)
+                refresh_row = self._create_info_row(
+                    "Refresh Token",
+                    "✓ Available"
+                )
+                session_group.add(refresh_row)
             
             # Token file location
-            token_file_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            token_file_label = Gtk.Label(label="Token File:")
-            token_file_label.set_width_chars(15)
-            token_file_label.set_halign(Gtk.Align.START)
-            token_file_value = Gtk.Label(label=str(config.token_path))
-            token_file_value.set_halign(Gtk.Align.START)
-            token_file_value.set_selectable(True)
-            token_file_value.set_line_wrap(True)
-            token_file_box.pack_start(token_file_label, False, False, 0)
-            token_file_box.pack_start(token_file_value, False, False, 0)
-            box.add(token_file_box)
+            token_row = self._create_info_row(
+                "Token File",
+                str(config.token_path),
+                selectable=True,
+                wrap=True
+            )
+            session_group.add(token_row)
             
-            # Buttons - just Close
-            self.add_button("Close", Gtk.ResponseType.CLOSE)
+            # Buttons
+            self.add_button("_Close", Gtk.ResponseType.CLOSE)
             
         else:
-            # Not authenticated
-            title_label = Gtk.Label()
-            title_label.set_markup("<b>Not Authenticated</b>")
-            title_label.set_halign(Gtk.Align.START)
-            box.add(title_label)
-            
-            info_label = Gtk.Label(
-                label="You are not currently authenticated with OneDrive.\n\n"
-                      "Use Authentication → Login to log in with your Microsoft account."
+            # Not authenticated - show info message
+            not_auth_group = self._create_auth_group(
+                "Not Authenticated",
+                "You are not currently authenticated with OneDrive"
             )
-            info_label.set_halign(Gtk.Align.START)
-            info_label.set_line_wrap(True)
-            box.add(info_label)
+            main_box.pack_start(not_auth_group, False, False, 0)
             
-            # Show application ID that will be used
-            client_id = config.client_id or OneDriveClient.DEFAULT_CLIENT_ID
-            client_id_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            client_id_label = Gtk.Label(label="Application ID:")
-            client_id_label.set_width_chars(15)
-            client_id_label.set_halign(Gtk.Align.START)
-            client_id_value = Gtk.Label(label=client_id)
-            client_id_value.set_halign(Gtk.Align.START)
-            client_id_value.set_selectable(True)
-            client_id_box.pack_start(client_id_label, False, False, 0)
-            client_id_box.pack_start(client_id_value, False, False, 0)
-            box.add(client_id_box)
+            info_row = self._create_info_row(
+                "Action Required",
+                "Use Authentication → Login to authenticate with your Microsoft account",
+                wrap=True
+            )
+            not_auth_group.add(info_row)
             
-            # Buttons - just Close
-            self.add_button("Close", Gtk.ResponseType.CLOSE)
+            # Buttons
+            self.add_button("_Close", Gtk.ResponseType.CLOSE)
         
         self.show_all()
+    
+    def _create_auth_group(self, title: str, description: str) -> Gtk.Box:
+        """Create a Libadwaita-style group for authentication dialog."""
+        group_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        
+        # Header
+        header_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        header_box.set_margin_start(12)
+        
+        title_label = Gtk.Label(label=title)
+        title_label.set_halign(Gtk.Align.START)
+        title_label.get_style_context().add_class("heading")
+        header_box.pack_start(title_label, False, False, 0)
+        
+        desc_label = Gtk.Label(label=description)
+        desc_label.set_halign(Gtk.Align.START)
+        desc_label.get_style_context().add_class("dim-label")
+        desc_label.get_style_context().add_class("caption")
+        header_box.pack_start(desc_label, False, False, 0)
+        
+        group_box.pack_start(header_box, False, False, 0)
+        
+        # Boxed list frame
+        frame = Gtk.Frame()
+        frame.set_shadow_type(Gtk.ShadowType.IN)
+        frame.get_style_context().add_class("view")
+        
+        list_box = Gtk.ListBox()
+        list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        frame.add(list_box)
+        
+        group_box.pack_start(frame, False, False, 0)
+        
+        # Store list_box reference
+        group_box.list_box = list_box
+        
+        return group_box
+    
+    def _create_info_row(self, label: str, value: str, selectable: bool = False, wrap: bool = False) -> Gtk.Box:
+        """Create an info row for authentication dialog."""
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row.set_margin_top(12)
+        row.set_margin_bottom(12)
+        row.set_margin_start(12)
+        row.set_margin_end(12)
+        
+        # Label
+        label_widget = Gtk.Label(label=label)
+        label_widget.set_halign(Gtk.Align.START)
+        label_widget.set_xalign(0)
+        label_widget.set_valign(Gtk.Align.START)
+        label_widget.set_width_chars(15)
+        row.pack_start(label_widget, False, False, 0)
+        
+        # Value
+        value_widget = Gtk.Label(label=value)
+        value_widget.set_halign(Gtk.Align.START)
+        value_widget.set_xalign(0)
+        value_widget.set_selectable(selectable)
+        if wrap:
+            value_widget.set_line_wrap(True)
+            value_widget.set_max_width_chars(50)
+        row.pack_start(value_widget, True, True, 0)
+        
+        return row
 
 
 class SettingsDialog(Gtk.Dialog):
