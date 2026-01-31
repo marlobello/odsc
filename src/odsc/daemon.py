@@ -565,19 +565,54 @@ class SyncDaemon:
         return all_remote_folders
     
     def _sync_files(self, sync_dir: Path, local_files: Dict, remote_files: Dict, all_remote_files: Dict) -> None:
-        """Sync files between local and remote."""
-        all_paths = set(local_files.keys()) | set(all_remote_files.keys())
+        """Sync files between local and remote (optimized)."""
+        import time
+        start_time = time.time()
         
-        for rel_path in all_paths:
-            local_info = local_files.get(rel_path)
+        # OPTIMIZATION: Only process files that actually need syncing
+        # Instead of iterating through ALL 25K+ remote files, we:
+        # 1. Check all local files (small set - ~80 files)
+        # 2. Check only files changed remotely in this delta (small set)
+        # 3. Skip everything else (already in sync)
+        
+        processed = set()
+        sync_count = {'upload': 0, 'download': 0, 'skip': 0, 'conflict': 0, 'recycle': 0}
+        
+        # Process local files (check if they need upload)
+        for rel_path, local_info in local_files.items():
             remote_info = remote_files.get(rel_path) or all_remote_files.get(rel_path)
             state_entry = self.state['files'].get(rel_path, {})
             
             try:
                 action = self._determine_sync_action(rel_path, local_info, remote_info, state_entry)
                 self._execute_sync_action(action, rel_path, sync_dir, local_info, remote_info)
+                sync_count[action] = sync_count.get(action, 0) + 1
+                processed.add(rel_path)
             except Exception as e:
                 logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
+        
+        # Process files changed remotely (check if they need download)
+        # remote_files contains ONLY files that changed in this delta query
+        for rel_path, remote_info in remote_files.items():
+            if rel_path in processed:
+                continue  # Already processed above
+            
+            local_info = local_files.get(rel_path)
+            state_entry = self.state['files'].get(rel_path, {})
+            
+            try:
+                action = self._determine_sync_action(rel_path, local_info, remote_info, state_entry)
+                self._execute_sync_action(action, rel_path, sync_dir, local_info, remote_info)
+                sync_count[action] = sync_count.get(action, 0) + 1
+                processed.add(rel_path)
+            except Exception as e:
+                logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
+        
+        elapsed = time.time() - start_time
+        logger.info(f"File sync completed in {elapsed:.2f}s: "
+                   f"{sync_count['upload']} uploaded, {sync_count['download']} downloaded, "
+                   f"{sync_count['skip']} skipped, {sync_count['conflict']} conflicts, "
+                   f"{sync_count['recycle']} recycled ({len(processed)} total processed)")
     
     def _execute_sync_action(self, action: str, rel_path: str, sync_dir: Path, 
                             local_info: Optional[Dict], remote_info: Optional[Dict]) -> None:
@@ -753,8 +788,62 @@ class SyncDaemon:
     def _finalize_sync(self) -> None:
         """Finalize sync by updating state and cleaning up."""
         self.state['last_sync'] = datetime.now().isoformat()
+        
+        # Clean up stale cache entries periodically
+        self._cleanup_stale_cache_entries()
+        
         self.config.save_state(self.state)
         self._cleanup_recycle_bin()
+    
+    def _cleanup_stale_cache_entries(self) -> None:
+        """Remove cache entries for files that no longer exist locally or remotely.
+        
+        This prevents the cache from growing indefinitely with deleted files.
+        Only runs every 10 syncs to avoid performance impact.
+        """
+        # Only cleanup every 10th sync
+        sync_count = self.state.get('sync_count', 0) + 1
+        self.state['sync_count'] = sync_count
+        
+        if sync_count % 10 != 0:
+            return
+        
+        import time
+        start_time = time.time()
+        
+        # Get list of all local files (relative paths)
+        sync_dir = self.config.sync_directory
+        local_paths = set()
+        for path in sync_dir.rglob('*'):
+            if any(part.startswith('.') for part in path.parts):
+                continue
+            try:
+                local_paths.add(str(path.relative_to(sync_dir)))
+            except (OSError, ValueError):
+                pass
+        
+        # Check cache entries
+        stale_entries = []
+        for cached_path in list(self.state['file_cache'].keys()):
+            # Skip if exists locally
+            if cached_path in local_paths:
+                continue
+            
+            # Skip if in tracking state (being synced)
+            if cached_path in self.state.get('files', {}):
+                continue
+            
+            # This is a stale entry - was deleted both locally and remotely
+            stale_entries.append(cached_path)
+        
+        # Remove stale entries
+        for path in stale_entries:
+            del self.state['file_cache'][path]
+        
+        elapsed = time.time() - start_time
+        if stale_entries:
+            logger.info(f"Cleaned up {len(stale_entries)} stale cache entries in {elapsed:.2f}s "
+                       f"(cache size: {len(self.state['file_cache'])} entries)")
     
     def _move_to_recycle_bin(self, local_path: Path, rel_path: str) -> None:
         """Move file or folder to system recycle bin/trash.
