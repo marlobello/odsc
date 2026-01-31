@@ -14,18 +14,30 @@ logger = logging.getLogger(__name__)
 
 
 class SplashScreen(Gtk.Window):
-    """Splash screen window for ODSC."""
+    """Splash screen / About dialog for ODSC."""
     
-    def __init__(self):
-        """Initialize splash screen."""
+    def __init__(self, show_close_button=False):
+        """Initialize splash screen.
+        
+        Args:
+            show_close_button: If True, show close button (for About dialog mode)
+        """
         # Use TOPLEVEL window that can be modal and transient
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
         
         self.set_position(Gtk.WindowPosition.CENTER_ON_PARENT)
-        self.set_default_size(400, 300)
-        self.set_decorated(False)  # No window decorations
+        self.set_default_size(450, 350)
         self.set_resizable(False)
-        self.set_deletable(False)  # Can't be closed manually
+        
+        if show_close_button:
+            # About dialog mode: show minimal decorations with close button
+            self.set_decorated(True)
+            self.set_deletable(True)
+            self.set_title("About ODSC")
+        else:
+            # Splash mode: no decorations, can't be closed manually
+            self.set_decorated(False)
+            self.set_deletable(False)
         
         # Create main container
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
@@ -43,17 +55,33 @@ class SplashScreen(Gtk.Window):
         title_label.set_halign(Gtk.Align.CENTER)
         vbox.pack_start(title_label, False, False, 0)
         
-        # Add version/subtitle
+        # Add subtitle
         subtitle_label = Gtk.Label()
-        subtitle_label.set_markup('<span size="small" foreground="#666666">Loading...</span>')
+        subtitle_label.set_markup('<span size="small" foreground="#666666">A lightweight Linux sync client for OneDrive</span>')
         subtitle_label.set_halign(Gtk.Align.CENTER)
+        subtitle_label.set_line_wrap(True)
         vbox.pack_start(subtitle_label, False, False, 0)
         
-        # Add spinner
-        spinner = Gtk.Spinner()
-        spinner.set_size_request(32, 32)
-        spinner.start()
-        vbox.pack_start(spinner, False, False, 10)
+        # Add links section
+        links_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        links_box.set_halign(Gtk.Align.CENTER)
+        vbox.pack_start(links_box, False, False, 10)
+        
+        # GitHub link
+        github_button = Gtk.LinkButton.new_with_label(
+            "https://github.com/marlobello/odsc",
+            "View on GitHub"
+        )
+        github_button.set_halign(Gtk.Align.CENTER)
+        links_box.pack_start(github_button, False, False, 0)
+        
+        # License link
+        license_button = Gtk.LinkButton.new_with_label(
+            "https://github.com/marlobello/odsc/blob/main/LICENSE",
+            "MIT License"
+        )
+        license_button.set_halign(Gtk.Align.CENTER)
+        links_box.pack_start(license_button, False, False, 0)
         
         # Set background color
         css_provider = Gtk.CssProvider()

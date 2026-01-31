@@ -223,7 +223,15 @@ class MenuBarMixin:
     
     def _on_about_clicked(self, widget) -> None:
         """Handle About menu item click."""
-        webbrowser.open("https://github.com/marlobello/odsc/blob/main/README.md")
+        try:
+            from .splash import SplashScreen
+            splash = SplashScreen(show_close_button=True)
+            splash.set_transient_for(self)
+            splash.set_modal(True)
+            splash.show_all()
+            # No auto-close timeout - user closes manually via X button
+        except Exception as e:
+            logger.error(f"Error showing about dialog: {e}")
     
     def _on_license_clicked(self, widget) -> None:
         """Handle License menu item click."""

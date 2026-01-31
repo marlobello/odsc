@@ -38,13 +38,13 @@ def main():
                 self.window = OneDriveGUI(self)
                 self.window.show_all()
                 
-                # Show splash as modal overlay on top
-                splash = SplashScreen()
+                # Show splash as modal overlay on top (auto-closes, no close button)
+                splash = SplashScreen(show_close_button=False)
                 splash.set_transient_for(self.window)
                 splash.set_modal(True)
                 splash.show_all()
                 
-                # Auto-close splash after 3 seconds
+                # Auto-close splash after 3 seconds (launch mode only)
                 GLib.timeout_add(3000, splash.close_splash)
                 
             else:
