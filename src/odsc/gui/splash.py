@@ -18,16 +18,14 @@ class SplashScreen(Gtk.Window):
     
     def __init__(self):
         """Initialize splash screen."""
-        # Use TOPLEVEL instead of POPUP to avoid positioning warnings
+        # Use TOPLEVEL window that can be modal and transient
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
         
-        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_position(Gtk.WindowPosition.CENTER_ON_PARENT)
         self.set_default_size(400, 300)
         self.set_decorated(False)  # No window decorations
         self.set_resizable(False)
-        self.set_skip_taskbar_hint(True)  # Don't show in taskbar
-        self.set_skip_pager_hint(True)  # Don't show in pager
-        self.set_type_hint(Gdk.WindowTypeHint.SPLASHSCREEN)  # Mark as splash screen
+        self.set_deletable(False)  # Can't be closed manually
         
         # Create main container
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)

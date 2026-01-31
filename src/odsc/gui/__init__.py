@@ -19,6 +19,7 @@ def main():
     import gi
     gi.require_version('Gtk', '3.0')
     from gi.repository import Gtk, Gio, GLib
+    from .splash import SplashScreen
     
     class OneDriveApplication(Gtk.Application):
         """GTK Application for OneDrive Sync Client."""
@@ -33,8 +34,19 @@ def main():
         def do_activate(self):
             """Activate the application."""
             if not self.window:
+                # Create main window first
                 self.window = OneDriveGUI(self)
                 self.window.show_all()
+                
+                # Show splash as modal overlay on top
+                splash = SplashScreen()
+                splash.set_transient_for(self.window)
+                splash.set_modal(True)
+                splash.show_all()
+                
+                # Auto-close splash after 2 seconds
+                GLib.timeout_add(2000, splash.close_splash)
+                
             else:
                 # Window already exists - bring it to focus
                 self.window.show_all()
