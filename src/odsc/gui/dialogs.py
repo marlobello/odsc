@@ -1,5 +1,6 @@
 """Dialog classes for ODSC GUI."""
 
+import html
 import logging
 from pathlib import Path
 from typing import Optional
@@ -179,7 +180,8 @@ class AuthInfoDialog(Gtk.Dialog):
             client_id_label = Gtk.Label(label="Application ID:")
             client_id_label.set_width_chars(15)
             client_id_label.set_halign(Gtk.Align.START)
-            client_id_value = Gtk.Label(label=client.client_id if client else "Unknown")
+            # Escape client ID (though it's controlled, be defensive)
+            client_id_value = Gtk.Label(label=html.escape(client.client_id if client else "Unknown"))
             client_id_value.set_halign(Gtk.Align.START)
             client_id_value.set_selectable(True)
             client_id_box.pack_start(client_id_label, False, False, 0)

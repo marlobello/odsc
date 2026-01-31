@@ -404,8 +404,18 @@ class SyncDaemon:
         for path in list(self._deleted_from_remote):
             local_path = sync_dir / path
             
-            # Check if deletion succeeded
-            if not local_path.exists():
+            # Validate path is within sync directory (protect against symlink attacks)
+            try:
+                validate_sync_path(sync_dir, local_path)
+            except SecurityError as e:
+                logger.error(f"Path validation failed for deletion: {path} - {e}")
+                continue
+            
+            # Check if deletion succeeded (use try/except to avoid TOCTOU)
+            try:
+                # Try to stat the file - if it doesn't exist, this will raise FileNotFoundError
+                local_path.stat()
+            except FileNotFoundError:
                 logger.debug(f"Deletion verified successful: {path}")
                 continue
             
@@ -415,16 +425,25 @@ class SyncDaemon:
             for attempt in range(3):
                 try:
                     if local_path.is_dir():
+                        # Re-validate before rmtree to prevent symlink attacks
+                        validate_sync_path(sync_dir, local_path)
                         # For directories, use rmtree directly (skip send2trash)
                         shutil.rmtree(local_path, ignore_errors=False)
                         logger.info(f"Directory deleted on retry {attempt + 1}: {path}")
                     else:
-                        # For files, use unlink
-                        local_path.unlink(missing_ok=True)
-                        logger.info(f"File deleted on retry {attempt + 1}: {path}")
+                        # For files, use unlink with try/except (avoid TOCTOU)
+                        try:
+                            local_path.unlink()
+                            logger.info(f"File deleted on retry {attempt + 1}: {path}")
+                        except FileNotFoundError:
+                            logger.debug(f"File already gone during retry: {path}")
                     
                     # Verify it's really gone
-                    if not local_path.exists():
+                    try:
+                        local_path.stat()
+                        # Still exists, continue retrying
+                    except FileNotFoundError:
+                        # Successfully deleted
                         break
                     
                 except PermissionError as e:
@@ -503,11 +522,14 @@ class SyncDaemon:
             try:
                 rel_path = str(path.relative_to(sync_dir))
                 
+                # Cache stat result to avoid TOCTOU race conditions
+                stat_info = path.stat()
+                
                 if path.is_file():
                     local_files[rel_path] = {
                         'path': path,
-                        'mtime': path.stat().st_mtime,
-                        'size': path.stat().st_size,
+                        'mtime': stat_info.st_mtime,
+                        'size': stat_info.st_size,
                     }
                 elif path.is_dir():
                     local_folders[rel_path] = {'path': path}

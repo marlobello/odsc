@@ -309,8 +309,13 @@ class OneDriveClient:
         """
         # Validate URL is from Microsoft Graph API (SSRF protection)
         parsed = urlparse(url)
-        if parsed.hostname != 'graph.microsoft.com':
-            raise SecurityError(f"Untrusted pagination URL domain: {parsed.hostname}")
+        if not (parsed.scheme == 'https' and 
+                parsed.hostname == 'graph.microsoft.com' and
+                parsed.path.startswith('/v1.0/')):
+            raise SecurityError(
+                f"Untrusted pagination URL: {url} "
+                f"(scheme={parsed.scheme}, host={parsed.hostname}, path={parsed.path})"
+            )
         
         self._ensure_token()
         
@@ -451,7 +456,9 @@ class OneDriveClient:
         # Download with temporary file first for atomicity
         temp_path = local_path.with_suffix(local_path.suffix + '.tmp')
         try:
-            with open(temp_path, 'wb') as f:
+            # Use os.open with O_CREAT|O_EXCL to prevent TOCTOU symlink attacks
+            fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
             

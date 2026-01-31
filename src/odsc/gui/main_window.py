@@ -1,5 +1,6 @@
 """Main window for ODSC GUI."""
 
+import html
 import logging
 import subprocess
 import threading
@@ -191,7 +192,8 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         self.log_panel.pack_start(header_box, False, False, 0)
         
         log_label = Gtk.Label()
-        log_label.set_markup(f"<b>Log: {self.config.log_path}</b>")
+        # Escape path to prevent Pango markup injection
+        log_label.set_markup(f"<b>Log: {html.escape(str(self.config.log_path))}</b>")
         log_label.set_halign(Gtk.Align.START)
         header_box.pack_start(log_label, True, True, 0)
         
@@ -856,9 +858,10 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         """Update status label.
         
         Args:
-            message: Status message
+            message: Status message (will be escaped to prevent markup injection)
         """
-        self.status_label.set_markup(f"<i>Status: {message}</i>")
+        # Escape user-controlled data to prevent Pango markup injection
+        self.status_label.set_markup(f"<i>Status: {html.escape(message)}</i>")
     
     def _show_error(self, title: str, message: str = None) -> None:
         """Show error dialog.
