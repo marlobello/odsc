@@ -14,7 +14,7 @@ Your daemon was running **OLD CODE** from before the fixes were deployed!
 
 ## Testing Tools Provided
 
-### 1. **Comprehensive Test Suite** (`test_sync_scenarios.py`)
+### 1. **Comprehensive Test Suite** (`tests/test_sync_scenarios.py`)
 Interactive test that guides you through all sync scenarios:
 - ✓ Files created in OneDrive
 - ✓ Files created locally
@@ -30,23 +30,23 @@ Interactive test that guides you through all sync scenarios:
 **Usage:**
 ```bash
 cd /home/marlo/git/odsc
-python3 test_sync_scenarios.py
+python3 tests/test_sync_scenarios.py
 ```
 
-### 2. **Quick Status Checker** (`check_sync_status.sh`)
+### 2. **Quick Status Checker** (`tests/check_sync_status.sh`)
 Shows daemon status, recent logs, and sync state summary.
 
 **Usage:**
 ```bash
-./check_sync_status.sh
+./tests/check_sync_status.sh
 ```
 
-### 3. **Deletion Diagnostic** (`diagnose_deletion.sh`)
+### 3. **Deletion Diagnostic** (`tests/diagnose_deletion.sh`)
 Specifically checks if deletion fixes are deployed and working.
 
 **Usage:**
 ```bash
-./diagnose_deletion.sh
+./tests/diagnose_deletion.sh
 ```
 
 ---
