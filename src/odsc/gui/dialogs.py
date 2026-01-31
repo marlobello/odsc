@@ -349,6 +349,20 @@ class SettingsDialog(Gtk.Dialog):
         
         box.add(hbox3)
         
+        # Show splash screen checkbox
+        hbox4 = Gtk.Box(spacing=6)
+        label4 = Gtk.Label(label="Show Splash Screen:")
+        label4.set_width_chars(20)
+        label4.set_halign(Gtk.Align.START)
+        hbox4.pack_start(label4, False, False, 0)
+        
+        self.show_splash_check = Gtk.CheckButton(label="Display splash screen on startup")
+        self.show_splash_check.set_active(config.show_splash)
+        self.show_splash_check.connect("toggled", self._on_show_splash_changed)
+        hbox4.pack_start(self.show_splash_check, False, False, 0)
+        
+        box.add(hbox4)
+        
         # Mark initialization as complete
         self._initializing = False
         
@@ -446,3 +460,27 @@ class SettingsDialog(Gtk.Dialog):
                     if level == old_level:
                         self.log_level_combo.set_active(i)
                         break
+    
+    def _on_show_splash_changed(self, widget) -> None:
+        """Handle show splash screen toggle."""
+        if self._initializing:
+            return
+        
+        show_splash = widget.get_active()
+        
+        try:
+            self.config.set('show_splash', show_splash)
+            status = "enabled" if show_splash else "disabled"
+            logger.info(f"Splash screen {status}")
+            
+            DialogHelper.show_info(
+                self.get_transient_for(),
+                "Splash Screen Setting Changed",
+                f"Splash screen has been {status}.\n\n"
+                f"This will take effect the next time you launch the GUI."
+            )
+        except ValueError as e:
+            # Validation failed (unlikely for boolean)
+            DialogHelper.show_error(self, f"Failed to save setting: {e}")
+            # Revert
+            widget.set_active(self.config.show_splash)

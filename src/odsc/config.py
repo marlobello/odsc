@@ -107,6 +107,7 @@ class Config:
                 'sync_interval': 300,  # 5 minutes
                 'auto_start': False,
                 'log_level': 'INFO',
+                'show_splash': True,  # Show splash screen on startup (default: enabled)
             }
             self.save()
             logger.debug(f"Created default config at {self.config_path}")
@@ -175,6 +176,11 @@ class Config:
     def log_level(self) -> str:
         """Get log level."""
         return self._config.get('log_level', 'INFO').upper()
+    
+    @property
+    def show_splash(self) -> bool:
+        """Get whether to show splash screen on startup."""
+        return self._config.get('show_splash', True)
     
     def _get_encryption_key(self) -> bytes:
         """Get or create encryption key from system keyring.
