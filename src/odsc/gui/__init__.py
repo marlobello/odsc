@@ -44,8 +44,8 @@ def main():
                 splash.set_modal(True)
                 splash.show_all()
                 
-                # Auto-close splash after 2 seconds
-                GLib.timeout_add(2000, splash.close_splash)
+                # Auto-close splash after 3 seconds
+                GLib.timeout_add(3000, splash.close_splash)
                 
             else:
                 # Window already exists - bring it to focus

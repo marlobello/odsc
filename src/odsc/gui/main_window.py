@@ -70,6 +70,9 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         self._build_ui()
         
         self._update_auth_menu_state()
+        
+        # Add secret key combination handler (Ctrl+Shift+A for About/branding)
+        self.connect("key-press-event", self._on_key_press)
     
     def _init_client(self) -> bool:
         """Initialize OneDrive client.
@@ -82,6 +85,42 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         token_data = self.config.load_token()
         self.client = OneDriveClient(client_id, token_data)
         return True
+    
+    def _on_key_press(self, widget, event):
+        """Handle key press events for secret combinations.
+        
+        Args:
+            widget: Widget that received the event
+            event: Key press event
+            
+        Returns:
+            False to allow other handlers to process the event
+        """
+        from gi.repository import Gdk
+        
+        # Check for Ctrl+Shift+A (About/branding splash)
+        if (event.state & Gdk.ModifierType.CONTROL_MASK and
+            event.state & Gdk.ModifierType.SHIFT_MASK and
+            event.keyval == Gdk.KEY_A):
+            self._show_splash_overlay()
+            return True
+        
+        return False
+    
+    def _show_splash_overlay(self):
+        """Show splash screen as modal overlay (Easter egg/secret feature)."""
+        try:
+            from .splash import SplashScreen
+            splash = SplashScreen()
+            splash.set_transient_for(self)
+            splash.set_modal(True)
+            splash.show_all()
+            
+            # Auto-close after 3 seconds
+            GLib.timeout_add(3000, splash.close_splash)
+            logger.debug("Splash screen triggered via secret key combo")
+        except Exception as e:
+            logger.error(f"Error showing splash: {e}")
     
     def _build_ui(self) -> None:
         """Build the user interface."""
