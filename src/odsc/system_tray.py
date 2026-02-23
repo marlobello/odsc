@@ -10,7 +10,7 @@ from typing import Optional
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('AppIndicator3', '0.1')
-from gi.repository import Gtk, AppIndicator3, GLib
+from gi.repository import Gtk, AppIndicator3, GLib, Gio
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ class SystemTrayIndicator:
         self.daemon = daemon
         self.indicator = None
         self.status_item = None
+        self._watcher_watch_id = None
         self._setup_indicator()
     
     def _setup_indicator(self):
@@ -234,21 +235,41 @@ class SystemTrayIndicator:
     
     def run(self):
         """Run the GTK main loop (blocking)."""
-        # Delay activation so the desktop panel/applet host has time to start.
-        # idle_add fires too early on first login; a short timeout is more reliable.
-        GLib.timeout_add_seconds(3, self._activate_indicator)
+        # Watch for StatusNotifierWatcher on the session bus — AppIndicator3
+        # registers tray icons with it.  The callback fires immediately if the
+        # watcher is already up, or as soon as it appears.  This replaces the
+        # fragile hardcoded timeout that races against panel startup.
+        self._watcher_watch_id = Gio.bus_watch_name(
+            Gio.BusType.SESSION,
+            "org.kde.StatusNotifierWatcher",
+            Gio.BusNameWatcherFlags.NONE,
+            self._on_watcher_appeared,
+            None,
+        )
         
         logger.info("Starting system tray indicator main loop")
         Gtk.main()
     
+    def _on_watcher_appeared(self, connection, name, name_owner):
+        """Called when StatusNotifierWatcher is available on the session bus."""
+        logger.debug("StatusNotifierWatcher available, activating indicator")
+        self._activate_indicator()
+        # One-shot: unwatch now that the indicator is registered
+        if self._watcher_watch_id is not None:
+            Gio.bus_unwatch_name(self._watcher_watch_id)
+            self._watcher_watch_id = None
+    
     def _activate_indicator(self):
-        """Activate the indicator (called after GTK main loop starts)."""
+        """Activate the indicator."""
         if self.indicator:
             self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
             logger.debug("System tray indicator activated")
-        return False  # Don't repeat
+        return False  # Safe to use as a GLib callback too
     
     def quit(self):
         """Quit the GTK main loop."""
+        if self._watcher_watch_id is not None:
+            Gio.bus_unwatch_name(self._watcher_watch_id)
+            self._watcher_watch_id = None
         logger.info("Stopping system tray indicator")
         Gtk.main_quit()
