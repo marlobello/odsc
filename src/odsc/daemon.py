@@ -1065,8 +1065,30 @@ class SyncDaemon:
 def main():
     """Main entry point for daemon."""
     config = Config()
-    daemon = SyncDaemon(config)
-    daemon.start()
+    
+    pid_file = config.config_dir / "odsc.pid"
+    
+    # Single-instance guard: check for a running instance via PID file
+    if pid_file.exists():
+        try:
+            existing_pid = int(pid_file.read_text().strip())
+            # Signal 0 checks existence without killing
+            os.kill(existing_pid, 0)
+            logger.error(
+                f"Daemon already running with PID {existing_pid}. "
+                "Remove ~/.config/odsc/odsc.pid if this is incorrect."
+            )
+            return
+        except (ProcessLookupError, ValueError):
+            # Stale PID file — previous instance is gone
+            pid_file.unlink(missing_ok=True)
+    
+    pid_file.write_text(str(os.getpid()))
+    try:
+        daemon = SyncDaemon(config)
+        daemon.start()
+    finally:
+        pid_file.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':

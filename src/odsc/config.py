@@ -280,9 +280,14 @@ class Config:
             
             return token_data
         except InvalidToken:
+            # Token data is genuinely corrupted or wrong key — safe to delete
             raise ValueError("Invalid or corrupted token data")
-        except Exception as e:
-            raise ValueError(f"Decryption failed: {e}")
+        except ValueError:
+            raise
+        except Exception:
+            # Keyring or other transient error — do NOT wrap as ValueError;
+            # re-raise so load_token() skips the deletion path.
+            raise
     
     def save_token(self, token_data: Dict[str, Any]) -> None:
         """Save encrypted OneDrive authentication token.
