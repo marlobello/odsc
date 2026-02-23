@@ -50,7 +50,7 @@ class SystemTrayIndicator:
                 AppIndicator3.IndicatorCategory.APPLICATION_STATUS
             )
         
-        self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        # Set title before activation
         self.indicator.set_title("OneDrive Sync Client")
         
         # Try to set a custom icon path for better scaling
@@ -234,8 +234,19 @@ class SystemTrayIndicator:
     
     def run(self):
         """Run the GTK main loop (blocking)."""
+        # Delay activation so the desktop panel/applet host has time to start.
+        # idle_add fires too early on first login; a short timeout is more reliable.
+        GLib.timeout_add_seconds(3, self._activate_indicator)
+        
         logger.info("Starting system tray indicator main loop")
         Gtk.main()
+    
+    def _activate_indicator(self):
+        """Activate the indicator (called after GTK main loop starts)."""
+        if self.indicator:
+            self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            logger.debug("System tray indicator activated")
+        return False  # Don't repeat
     
     def quit(self):
         """Quit the GTK main loop."""

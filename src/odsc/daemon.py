@@ -150,7 +150,7 @@ class SyncDaemon:
         sync_dir.mkdir(parents=True, exist_ok=True)
         
         # Start system tray indicator if available
-        if SYSTEM_TRAY_AVAILABLE and os.environ.get('DISPLAY'):
+        if SYSTEM_TRAY_AVAILABLE and (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
             try:
                 self._start_system_tray()
             except Exception as e:
