@@ -127,8 +127,20 @@ class SyncDaemon:
         # client_id is optional - will use default if not configured
         client_id = self.config.client_id or None
         
-        # Load existing token
-        token_data = self.config.load_token()
+        # Load existing token, retrying to handle the keyring being temporarily
+        # unavailable at login (e.g. GNOME Keyring not yet unlocked).
+        token_data = None
+        if self.config.token_path.exists():
+            for attempt in range(1, 6):
+                token_data = self.config.load_token()
+                if token_data is not None:
+                    break
+                logger.info(
+                    f"Keyring not yet available (attempt {attempt}/5), "
+                    "retrying in 5s..."
+                )
+                time.sleep(5)
+        
         if not token_data:
             logger.error("Not authenticated. Please run authentication first.")
             return False

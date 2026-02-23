@@ -220,7 +220,17 @@ class Config:
             # Decode existing key
             return base64.b64decode(key_str.encode())
         
-        # Generate new key
+        # If a token file already exists, the key must be in the keyring.
+        # Generating a new key here would cause decryption to fail and
+        # subsequently delete the token file — guard against this race
+        # condition (e.g. keyring not yet unlocked at login).
+        if self.token_path.exists():
+            raise RuntimeError(
+                "Encryption key not found in keyring but token file exists. "
+                "The keyring may be locked or temporarily unavailable."
+            )
+        
+        # No token exists yet — safe to generate a new key
         key = Fernet.generate_key()
         
         # Store in keyring
