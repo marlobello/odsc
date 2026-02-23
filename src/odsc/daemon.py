@@ -1068,22 +1068,29 @@ def main():
     
     pid_file = config.config_dir / "odsc.pid"
     
-    # Single-instance guard: check for a running instance via PID file
-    if pid_file.exists():
+    # Single-instance guard: atomically create PID file to avoid TOCTOU race
+    for attempt in range(2):
         try:
-            existing_pid = int(pid_file.read_text().strip())
-            # Signal 0 checks existence without killing
-            os.kill(existing_pid, 0)
-            logger.error(
-                f"Daemon already running with PID {existing_pid}. "
-                "Remove ~/.config/odsc/odsc.pid if this is incorrect."
-            )
-            return
-        except (ProcessLookupError, ValueError):
-            # Stale PID file — previous instance is gone
-            pid_file.unlink(missing_ok=True)
-    
-    pid_file.write_text(str(os.getpid()))
+            fd = os.open(str(pid_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                existing_pid = int(pid_file.read_text().strip())
+                # Signal 0 checks existence without killing
+                os.kill(existing_pid, 0)
+                logger.error(
+                    f"Daemon already running with PID {existing_pid}. "
+                    "Remove ~/.config/odsc/odsc.pid if this is incorrect."
+                )
+                return
+            except (ProcessLookupError, ValueError):
+                # Stale PID file — previous instance is gone
+                pid_file.unlink(missing_ok=True)
+    else:
+        logger.error("Failed to acquire PID file lock after retrying.")
+        return
     try:
         daemon = SyncDaemon(config)
         daemon.start()
