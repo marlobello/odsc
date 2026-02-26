@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import gi
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk, GLib, GdkPixbuf
 
 from ..config import Config
 from ..onedrive_client import OneDriveClient
@@ -84,7 +84,41 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         token_data = self.config.load_token()
         self.client = OneDriveClient(client_id, token_data)
         return True
-    
+
+    def _create_watermark(self) -> Optional[Gtk.Image]:
+        """Create a subtle centered watermark image from the ODSC logo.
+
+        Returns:
+            Gtk.Image positioned at center, or None if the logo cannot be loaded
+        """
+        possible_paths = [
+            Path(__file__).resolve().parents[3] / "desktop" / "odsc.svg",
+            Path(__file__).resolve().parents[3] / "desktop" / "odsc.png",
+            Path("/usr/share/pixmaps/odsc.svg"),
+            Path("/usr/local/share/pixmaps/odsc.svg"),
+            Path("/usr/share/pixmaps/odsc.png"),
+            Path.home() / ".local/share/pixmaps/odsc.png",
+        ]
+
+        for path in possible_paths:
+            if path.exists():
+                try:
+                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                        str(path), 270, 270, True
+                    )
+                    image = Gtk.Image.new_from_pixbuf(pixbuf)
+                    image.set_halign(Gtk.Align.CENTER)
+                    image.set_valign(Gtk.Align.CENTER)
+                    image.set_opacity(0.15)
+                    image.set_sensitive(False)
+                    logger.debug(f"Loaded watermark from: {path}")
+                    return image
+                except Exception as e:
+                    logger.debug(f"Could not load watermark from {path}: {e}")
+
+        logger.debug("Could not find ODSC logo for watermark")
+        return None
+
     def _compare_tree_items(self, model, iter1, iter2, user_data):
         """Compare two tree items for case-insensitive sorting.
         
@@ -142,7 +176,14 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        main_content_box.pack_start(scrolled, True, True, 0)
+
+        overlay = Gtk.Overlay()
+        overlay.add(scrolled)
+        watermark = self._create_watermark()
+        if watermark:
+            overlay.add_overlay(watermark)
+            overlay.set_overlay_pass_through(watermark, True)
+        main_content_box.pack_start(overlay, True, True, 0)
         
         self.file_store = Gtk.TreeStore(str, str, str, str, bool, str, bool, str, str)
         
