@@ -68,6 +68,7 @@ class SyncEventHandler(FileSystemEventHandler):
         with self._lock:
             self.pending_changes.add(path)
         logger.debug(f"Queued change: {path}")
+        self.daemon._wakeup_event.set()
     
     def get_pending_changes(self) -> Set[Path]:
         """Get and clear pending changes.
@@ -98,6 +99,7 @@ class SyncDaemon:
         self._sync_thread: Optional[threading.Thread] = None
         self.system_tray: Optional['SystemTrayIndicator'] = None
         self._tray_thread: Optional[threading.Thread] = None
+        self._wakeup_event = threading.Event()
         
         # Load sync state
         self.state = self.config.load_state()
@@ -247,8 +249,15 @@ class SyncDaemon:
             except Exception as e:
                 logger.error(f"Error in sync loop: {e}", exc_info=True)
             
-            # Wait for sync interval
-            time.sleep(self.config.sync_interval)
+            # Wait for next sync opportunity, but wake early on watchdog
+            # events or force sync requests (checked every second).
+            deadline = time.monotonic() + self.config.sync_interval
+            while self._running and time.monotonic() < deadline:
+                if self._wakeup_event.wait(timeout=1.0):
+                    self._wakeup_event.clear()
+                    break
+                if self.config.force_sync_path.exists():
+                    break
     
     
     def _should_do_periodic_sync(self) -> bool:
