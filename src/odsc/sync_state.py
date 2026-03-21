@@ -43,6 +43,7 @@ class SyncStateManager:
         self._save = backend_save
         self._lock = threading.Lock()
         self._state: Dict[str, Any] = {}
+        self._ensure_initialized()  # guarantee required keys exist from the start
 
     # ------------------------------------------------------------------ #
     # Lifecycle                                                            #
@@ -156,6 +157,7 @@ class SyncStateManager:
     def mark_file_not_downloaded(self, rel_path: str) -> None:
         """Set ``downloaded=False`` for *rel_path* (used by GUI on remove)."""
         with self._lock:
+            self._ensure_initialized()
             entry = self._state["files"].get(rel_path)
             if entry is not None:
                 entry["downloaded"] = False

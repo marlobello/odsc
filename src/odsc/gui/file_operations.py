@@ -28,9 +28,9 @@ class FileOperationsMixin:
         correctly interleave with the daemon's own writes.
         """
         if not hasattr(self, "_file_ops_state_mgr"):
-            self._file_ops_state_mgr = SyncStateManager(
-                self.config.load_state, self.config.save_state
-            )
+            mgr = SyncStateManager(self.config.load_state, self.config.save_state)
+            mgr.load()
+            self._file_ops_state_mgr = mgr
         return self._file_ops_state_mgr
 
     def _on_keep_local_clicked(self, widget) -> None:
