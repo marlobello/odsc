@@ -2,6 +2,7 @@
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import gi
@@ -209,7 +210,10 @@ class FileOperationsMixin:
                 rel_path = str(Path(parent_path) / file_name) if parent_path else file_name
                 local_path = validate_sync_path(rel_path, self.config.sync_directory)
                 
-                metadata = self.client.download_file(file_id, local_path)
+                metadata = self.client.download_file(
+                    file_id, local_path,
+                    chunk_size=self.config.download_chunk_size,
+                )
                 
                 state = self.config.load_state()
                 if 'files' not in state:
@@ -238,7 +242,7 @@ class FileOperationsMixin:
         thread.start()
     
     def _download_files_batch(self, files: list) -> None:
-        """Download multiple files in a single background thread.
+        """Download multiple files in parallel using a thread pool.
         
         Args:
             files: List of tuples (file_id, file_name)
@@ -246,46 +250,54 @@ class FileOperationsMixin:
         total = len(files)
         self._update_status(f"Downloading {total} files...")
         
+        def download_one(file_id, file_name, index):
+            GLib.idle_add(self._update_status, f"Downloading {index}/{total}: {file_name}")
+            file_info = self.client.get_file_metadata(file_id)
+            parent_path = file_info.get('parentReference', {}).get('path', '')
+            if parent_path:
+                parent_path = sanitize_onedrive_path(parent_path)
+            rel_path = str(Path(parent_path) / file_name) if parent_path else file_name
+            local_path = validate_sync_path(rel_path, self.config.sync_directory)
+            metadata = self.client.download_file(
+                file_id, local_path,
+                chunk_size=self.config.download_chunk_size,
+            )
+            return rel_path, {
+                'mtime': local_path.stat().st_mtime,
+                'size': file_info.get('size', 0),
+                'eTag': metadata.get('eTag', ''),
+                'remote_modified': metadata.get('lastModifiedDateTime', ''),
+                'downloaded': True,
+                'upload_error': None,
+            }
+        
         def download_batch():
             success_count = 0
             error_count = 0
+            state_updates = {}
             
-            state = self.config.load_state()
-            if 'files' not in state:
-                state['files'] = {}
-            
-            for i, (file_id, file_name) in enumerate(files, 1):
-                try:
-                    GLib.idle_add(self._update_status, f"Downloading {i}/{total}: {file_name}")
-                    
-                    file_info = self.client.get_file_metadata(file_id)
-                    parent_path = file_info.get('parentReference', {}).get('path', '')
-                    if parent_path:
-                        parent_path = sanitize_onedrive_path(parent_path)
-                    
-                    rel_path = str(Path(parent_path) / file_name) if parent_path else file_name
-                    local_path = validate_sync_path(rel_path, self.config.sync_directory)
-                    
-                    metadata = self.client.download_file(file_id, local_path)
-                    
-                    state['files'][rel_path] = {
-                        'mtime': local_path.stat().st_mtime,
-                        'size': file_info.get('size', 0),
-                        'eTag': metadata.get('eTag', ''),
-                        'remote_modified': metadata.get('lastModifiedDateTime', ''),
-                        'downloaded': True,
-                        'upload_error': None,
-                    }
-                    
-                    logger.info(f"Downloaded and marked for sync: {rel_path}")
-                    success_count += 1
-                    
-                except Exception as e:
-                    error_msg = f"Failed to download {file_name}: {str(e)}"
-                    logger.error(error_msg, exc_info=True)
-                    error_count += 1
+            max_workers = self.config.max_sync_workers
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_name = {
+                    executor.submit(download_one, file_id, file_name, i): file_name
+                    for i, (file_id, file_name) in enumerate(files, 1)
+                }
+                for future in as_completed(future_to_name):
+                    file_name = future_to_name[future]
+                    try:
+                        rel_path, state_entry = future.result()
+                        state_updates[rel_path] = state_entry
+                        logger.info(f"Downloaded and marked for sync: {rel_path}")
+                        success_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to download {file_name}: {e}", exc_info=True)
+                        error_count += 1
             
             try:
+                state = self.config.load_state()
+                if 'files' not in state:
+                    state['files'] = {}
+                state['files'].update(state_updates)
                 self.config.save_state(state)
                 logger.info(f"Batch download complete: {success_count} succeeded, {error_count} failed")
             except Exception as e:
