@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Sync daemon for ODSC."""
 
+import json
 import logging
 import os
 import time
 import signal
 import threading
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, Set, Optional
@@ -15,11 +17,15 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from send2trash import send2trash
 
+from . import __version__
 from .config import Config
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
 from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
 from .sync_state import SyncStateManager
+
+GITHUB_RELEASES_API = "https://api.github.com/repos/marlobello/odsc/releases/latest"
+UPDATE_CHECK_INTERVAL = 86400  # 24 hours
 
 # Try to import system tray (optional - may not be available in headless environments)
 try:
@@ -123,6 +129,7 @@ class SyncDaemon:
         self.system_tray: Optional['SystemTrayIndicator'] = None
         self._tray_thread: Optional[threading.Thread] = None
         self._wakeup_event = threading.Event()
+        self._last_update_check: float = 0.0
 
         self.state_mgr = SyncStateManager(self.config.load_state, self.config.save_state)
         self.state_mgr.load()
@@ -275,6 +282,9 @@ class SyncDaemon:
                 # Periodic full sync check
                 elif self._should_do_periodic_sync():
                     self._do_periodic_sync()
+
+                # Periodic update check (background, non-blocking)
+                self._check_for_updates()
                 
             except Exception as e:
                 logger.error(f"Error in sync loop: {e}", exc_info=True)
@@ -322,7 +332,50 @@ class SyncDaemon:
                 logger.warning(f"Failed to remove force sync signal: {e}")
                 return False
         return False
-    
+
+    def _check_for_updates(self) -> None:
+        """Check GitHub for a newer ODSC release (at most once per 24 h).
+
+        If a newer version is found, emits a desktop notification via
+        notify-send and logs at INFO level.  Errors are silently suppressed
+        so a network outage never interrupts the sync loop.
+        """
+        now = time.monotonic()
+        if now - self._last_update_check < UPDATE_CHECK_INTERVAL:
+            return
+        self._last_update_check = now
+
+        try:
+            req = urllib.request.Request(
+                GITHUB_RELEASES_API,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": f"odsc/{__version__}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            latest = data.get("tag_name", "").lstrip("v")
+            if not latest:
+                return
+
+            if latest != __version__:
+                msg = f"ODSC update available: v{latest} (installed: v{__version__})"
+                logger.info(msg)
+                try:
+                    import subprocess
+                    subprocess.run(
+                        ["notify-send", "--app-name=ODSC", "ODSC Update Available",
+                         f"Version {latest} is available.\n"
+                         "Run: bash install.sh  to upgrade."],
+                        check=False, timeout=5,
+                    )
+                except Exception:
+                    pass  # notify-send not available — log is enough
+        except Exception as e:
+            logger.debug(f"Update check failed (non-fatal): {e}")
+
+
     def _do_periodic_sync(self) -> None:
         """Perform periodic two-way sync of all files using delta query."""
         logger.info("Starting periodic two-way sync...")

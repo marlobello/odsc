@@ -3,13 +3,18 @@
 
 import argparse
 import sys
+import json
+import urllib.request
 import socketserver
 import webbrowser
 from pathlib import Path
 
+from odsc import __version__
 from odsc.config import Config
 from odsc.oauth_callback import AuthCallbackHandler
 from odsc.onedrive_client import OneDriveClient
+
+GITHUB_RELEASES_API = "https://api.github.com/repos/marlobello/odsc/releases/latest"
 
 
 def cmd_auth(args):
@@ -183,11 +188,40 @@ def cmd_list(args):
         return 1
 
 
+def cmd_update(args):
+    """Check for available updates."""
+    print(f"Installed version: {__version__}")
+    print("Checking for updates...")
+    try:
+        req = urllib.request.Request(
+            GITHUB_RELEASES_API,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": f"odsc/{__version__}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        latest = data.get("tag_name", "").lstrip("v")
+        if not latest:
+            print("Could not determine latest version.")
+            return 1
+
+        if latest == __version__:
+            print(f"✓ You are running the latest version ({__version__}).")
+        else:
+            print(f"⬆  Update available: v{latest}")
+            print("To upgrade, run:")
+            print("  curl -fsSL https://github.com/marlobello/odsc/releases/latest/download/install.sh | bash")
+    except Exception as e:
+        print(f"Error checking for updates: {e}")
+        return 1
+    return 0
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description='OneDrive Sync Client (ODSC) - Command-line utility'
     )
+    parser.add_argument('--version', action='version', version=f'odsc {__version__}')
     
     subparsers = parser.add_subparsers(dest='command', help='Command to run')
     
@@ -209,7 +243,11 @@ def main():
     # List command
     list_parser = subparsers.add_parser('list', help='List OneDrive files')
     list_parser.set_defaults(func=cmd_list)
-    
+
+    # Update command
+    update_parser = subparsers.add_parser('update', help='Check for available updates')
+    update_parser.set_defaults(func=cmd_update)
+
     args = parser.parse_args()
     
     if not args.command:

@@ -1,5 +1,8 @@
 # OneDrive Sync Client (ODSC)
 
+[![CI](https://github.com/marlobello/odsc/actions/workflows/ci.yml/badge.svg)](https://github.com/marlobello/odsc/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/marlobello/odsc)](https://github.com/marlobello/odsc/releases/latest)
+
 A lightweight Linux sync client for Microsoft OneDrive that runs as a background service with a GTK graphical interface.
 
 ## Features
@@ -27,11 +30,19 @@ A lightweight Linux sync client for Microsoft OneDrive that runs as a background
 
 ## Quick Installation
 
-**One command to install everything:**
+**One command — no git required:**
 
 ```bash
-./install.sh
+curl -fsSL https://github.com/marlobello/odsc/releases/latest/download/install.sh | bash
 ```
+
+Or download and inspect first:
+```bash
+curl -fsSL https://github.com/marlobello/odsc/releases/latest/download/install.sh -o install.sh
+bash install.sh
+```
+
+> **Upgrading?** Just re-run the same command. The installer detects and upgrades your existing installation.
 
 The install script will:
 1. ✅ Check Python version (requires 3.8+)
@@ -43,6 +54,14 @@ The install script will:
 7. ✅ Add GUI to application menu (optional)
 
 **That's it!** The script handles everything automatically.
+
+### Developer installation (from source)
+
+```bash
+git clone https://github.com/marlobello/odsc.git
+cd odsc
+bash install.sh --dev
+```
 
 ## First-Time Setup
 

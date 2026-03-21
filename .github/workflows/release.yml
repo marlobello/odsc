@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]*"
+
+permissions:
+  contents: write  # needed to create GitHub releases and upload assets
+
+jobs:
+  test:
+    name: Tests before release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
+            libdbus-1-dev python3-dbus \
+            libgirepository1.0-dev gcc libcairo2-dev pkg-config
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e . --no-build-isolation
+
+      - name: Run tests
+        run: pytest tests/ -v
+
+  release:
+    name: Build & publish release
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Read version from tag
+        id: version
+        run: |
+          # Strip leading 'v' from the tag (e.g. v1.2.3 → 1.2.3)
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify VERSION file matches tag
+        run: |
+          FILE_VERSION=$(cat VERSION)
+          if [ "$FILE_VERSION" != "$VERSION" ]; then
+            echo "ERROR: VERSION file ($FILE_VERSION) does not match tag ($VERSION)"
+            exit 1
+          fi
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build source distribution
+        run: python -m build --sdist
+
+      - name: Stamp version into install.sh
+        run: |
+          # Replace ODSC_RELEASE_VERSION placeholder in install.sh with actual version
+          sed "s/__ODSC_RELEASE_VERSION__/$VERSION/g" install.sh > install-release.sh
+          chmod +x install-release.sh
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "ODSC ${{ steps.version.outputs.version }}"
+          body: |
+            ## Installation
+
+            **One-liner (recommended):**
+            ```bash
+            curl -fsSL https://github.com/marlobello/odsc/releases/latest/download/install.sh | bash
+            ```
+
+            Or download `install.sh` below and run `bash install.sh`.
+
+            See [README](https://github.com/marlobello/odsc#readme) for full instructions.
+          generate_release_notes: true
+          files: |
+            install-release.sh:install.sh
+            dist/odsc-${{ steps.version.outputs.version }}.tar.gz

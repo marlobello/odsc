@@ -5,6 +5,9 @@
 #
 # Used by: python setup.py sdist, twine upload, etc.
 
+# Version
+include VERSION
+
 # Documentation
 include README.md
 include LICENSE
@@ -18,6 +21,7 @@ include install.sh
 # Desktop integration files
 recursive-include desktop *.desktop
 recursive-include desktop *.svg
+recursive-include desktop *.png
 
 # Systemd service files
 recursive-include systemd *.service
