@@ -37,6 +37,7 @@ jobs:
           # PyGObject and dbus-python are installed via system apt packages (python3-gi,
           # python3-dbus) to avoid native build failures.  Install only pure-Python deps here.
           grep -vE '^\s*(PyGObject|dbus-python)' requirements.txt | pip install -r /dev/stdin
+          pip install pytest
           pip install -e . --no-deps --no-build-isolation
 
       - name: Run tests

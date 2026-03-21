@@ -37,3 +37,6 @@ certifi>=2023.7.22
 
 # Retry logic with exponential backoff and jitter
 tenacity>=8.2.0
+
+# Testing
+pytest>=7.0.0
