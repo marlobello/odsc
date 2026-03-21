@@ -182,9 +182,8 @@ class Config:
     
     @sync_directory.setter
     def sync_directory(self, path: Path) -> None:
-        """Set sync directory path."""
-        self._config['sync_directory'] = str(path)
-        self.save()
+        """Set sync directory path (runs through SyncDirectoryValidator)."""
+        self.set('sync_directory', str(path))
     
     @property
     def sync_interval(self) -> int:
@@ -372,12 +371,26 @@ class Config:
             self._init_backend()
         
         try:
-            return self._backend.load()
+            state = self._backend.load()
+            # Report how much state was loaded so callers can detect data loss
+            tracked = len(state.get('files', {}))
+            cached = len(state.get('file_cache', {}))
+            logger.debug(f"Loaded state: {tracked} tracked files, {cached} cache entries")
+            return state
         except Exception as e:
-            logger.error(f"Failed to load state: {e}")
-            # Return default state on error
+            # Attempt to count how many records the backend had before failing
+            tracked_count = 0
+            try:
+                tracked_count = len(self._backend.load()) if self._backend else 0
+            except Exception:
+                pass
+            logger.error(
+                f"Failed to load state: {e} — falling back to empty state, "
+                f"~{tracked_count} tracked files may be lost and a full re-scan will occur",
+                exc_info=True,
+            )
             return {
-                'files': {}, 
+                'files': {},
                 'file_cache': {},
                 'last_sync': None,
                 'delta_token': None,

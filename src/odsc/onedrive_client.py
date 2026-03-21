@@ -3,9 +3,10 @@
 
 import logging
 import os
-import time
 import re
 import secrets
+import threading
+import time
 from functools import wraps
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
@@ -14,7 +15,7 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 import certifi
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
 
 from .path_utils import SecurityError
 
@@ -50,6 +51,7 @@ class OneDriveClient:
         self._session = requests.Session()
         self._session.verify = certifi.where()  # Explicit certificate validation
         self.state: Optional[str] = None  # For CSRF protection
+        self._token_lock = threading.Lock()
     
     def _sanitize_for_log(self, text: str) -> str:
         """Remove sensitive data from log output.
@@ -130,11 +132,6 @@ class OneDriveClient:
         try:
             response = requests.post(self.TOKEN_URL, data=data, verify=certifi.where(), timeout=30)
             logger.debug(f"Token exchange response status: {response.status_code}")
-            
-            if response.status_code != 200:
-                logger.error(f"Token exchange failed with status {response.status_code}")
-                logger.error(f"Response: {self._sanitize_for_log(response.text)}")
-            
             response.raise_for_status()
             
             self.token_data = response.json()
@@ -167,11 +164,6 @@ class OneDriveClient:
         try:
             response = requests.post(self.TOKEN_URL, data=data, verify=certifi.where(), timeout=30)
             logger.debug(f"Refresh token response status: {response.status_code}")
-            
-            if response.status_code != 200:
-                logger.error(f"Token refresh failed with status {response.status_code}")
-                logger.error(f"Response: {self._sanitize_for_log(response.text)}")
-            
             response.raise_for_status()
             
             self.token_data = response.json()
@@ -184,14 +176,23 @@ class OneDriveClient:
             raise
     
     def _ensure_token(self) -> None:
-        """Ensure we have a valid access token."""
+        """Ensure we have a valid access token, refreshing if necessary.
+        
+        Uses a lock to prevent multiple parallel workers from racing to
+        refresh the same expired token simultaneously.
+        """
         if not self.token_data:
             raise ValueError("Not authenticated. Call authenticate() first.")
         
-        # Refresh token if expired or about to expire (5 min buffer)
-        if self.token_data.get('expires_at', 0) < time.time() + 300:
-            logger.info("Token expired or expiring soon, refreshing...")
-            self.refresh_token()
+        # Fast path: token is still valid
+        if self.token_data.get('expires_at', 0) >= time.time() + 300:
+            return
+        
+        # Slow path: acquire lock and re-check (another thread may have refreshed)
+        with self._token_lock:
+            if self.token_data.get('expires_at', 0) < time.time() + 300:
+                logger.info("Token expired or expiring soon, refreshing...")
+                self.refresh_token()
     
     def _api_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
         """Make authenticated API request.
@@ -208,6 +209,10 @@ class OneDriveClient:
         
         headers = kwargs.pop('headers', {})
         headers['Authorization'] = f"Bearer {self.token_data['access_token']}"
+        
+        # Apply a default timeout so stalled transfers never block a worker
+        # indefinitely. Callers may override by passing timeout= explicitly.
+        kwargs.setdefault('timeout', (10, 300))  # (connect, read) seconds
         
         url = f"{self.API_BASE}{endpoint}"
         response = self._session.request(method, url, headers=headers, **kwargs)
@@ -404,7 +409,7 @@ class OneDriveClient:
     
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=4),
+        wait=wait_random_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
         reraise=True
     )
@@ -455,7 +460,7 @@ class OneDriveClient:
     
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=4),
+        wait=wait_random_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
         reraise=True
     )

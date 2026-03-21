@@ -31,33 +31,57 @@ class ConfigValidator:
         raise NotImplementedError
 
 
-class SyncIntervalValidator(ConfigValidator):
-    """Validates sync interval (seconds between syncs)."""
-    
-    MIN_INTERVAL = 60  # 1 minute
-    MAX_INTERVAL = 86400  # 24 hours
-    
+class IntegerValidator(ConfigValidator):
+    """Validates integer values with optional min/max bounds."""
+
+    def __init__(self, min_value: int = None, max_value: int = None):
+        self.min_value = min_value
+        self.max_value = max_value
+
     def validate(self, value: Any) -> int:
         try:
-            interval = int(value)
+            int_value = int(value)
         except (ValueError, TypeError):
-            raise ValidationError(f"Sync interval must be an integer, got: {value}")
-        
-        if interval < self.MIN_INTERVAL:
+            raise ValidationError(f"Must be an integer, got: {value}")
+
+        if self.min_value is not None and int_value < self.min_value:
             raise ValidationError(
-                f"Sync interval must be at least {self.MIN_INTERVAL} seconds"
+                f"Must be at least {self.min_value}, got: {int_value}"
             )
-        
-        if interval > self.MAX_INTERVAL:
+
+        if self.max_value is not None and int_value > self.max_value:
             raise ValidationError(
-                f"Sync interval must be at most {self.MAX_INTERVAL} seconds (24 hours)"
+                f"Must be at most {self.max_value}, got: {int_value}"
             )
-        
-        return interval
+
+        return int_value
+
+
+class SyncIntervalValidator(IntegerValidator):
+    """Validates sync interval (seconds between syncs).
+    
+    .. deprecated::
+        Use ``IntegerValidator(min_value=60, max_value=86400)`` directly.
+        This class exists only for backward compatibility.
+    """
+
+    MIN_INTERVAL = 60    # 1 minute
+    MAX_INTERVAL = 86400  # 24 hours
+
+    def __init__(self) -> None:
+        super().__init__(min_value=self.MIN_INTERVAL, max_value=self.MAX_INTERVAL)
 
 
 class SyncDirectoryValidator(ConfigValidator):
-    """Validates sync directory path."""
+    """Validates sync directory path.
+
+    .. warning::
+        This validator has a side-effect: if the given path does not exist it
+        will attempt to **create** the directory (and any missing parents).
+        Call :func:`prepare_sync_directory` explicitly when you want the
+        creation behaviour; when you only want to validate an existing path
+        use a standard path check instead.
+    """
     
     def validate(self, value: Any) -> str:
         if not isinstance(value, (str, Path)):
@@ -88,15 +112,10 @@ class SyncDirectoryValidator(ConfigValidator):
             )
         
         # Check write permissions
-        if not path.exists():
-            # Directory doesn't exist, check parent
-            test_path = path.parent
-        else:
-            test_path = path
-        
-        if not test_path.exists() or not test_path.is_dir():
+        import os
+        if not os.access(path, os.W_OK):
             raise ValidationError(
-                f"Sync directory is not accessible: {path}"
+                f"Sync directory is not writable: {path}"
             )
         
         return str(path)
@@ -173,34 +192,8 @@ class BooleanValidator(ConfigValidator):
         # Try to convert to bool directly
         try:
             return bool(value)
-        except:
+        except (TypeError, ValueError):
             raise ValidationError(f"Cannot convert to boolean: {value}")
-
-
-class IntegerValidator(ConfigValidator):
-    """Validates integer values with optional min/max bounds."""
-    
-    def __init__(self, min_value: int = None, max_value: int = None):
-        self.min_value = min_value
-        self.max_value = max_value
-    
-    def validate(self, value: Any) -> int:
-        try:
-            int_value = int(value)
-        except (ValueError, TypeError):
-            raise ValidationError(f"Must be an integer, got: {value}")
-        
-        if self.min_value is not None and int_value < self.min_value:
-            raise ValidationError(
-                f"Must be at least {self.min_value}, got: {int_value}"
-            )
-        
-        if self.max_value is not None and int_value > self.max_value:
-            raise ValidationError(
-                f"Must be at most {self.max_value}, got: {int_value}"
-            )
-        
-        return int_value
 
 
 class StringValidator(ConfigValidator):
@@ -231,58 +224,31 @@ class StringValidator(ConfigValidator):
         return value
 
 
-class MaxSyncWorkersValidator(ConfigValidator):
-    """Validates the number of parallel file transfer workers."""
+class MaxSyncWorkersValidator(IntegerValidator):
+    """Validates the number of parallel file transfer workers.
+    
+    .. deprecated::
+        Use ``IntegerValidator(min_value=1, max_value=16)`` directly.
+        This class exists only for backward compatibility.
+    """
 
-    MIN_WORKERS = 1
-    MAX_WORKERS = 16
-
-    def validate(self, value: Any) -> int:
-        try:
-            workers = int(value)
-        except (ValueError, TypeError):
-            raise ValidationError(f"max_sync_workers must be an integer, got: {value}")
-
-        if workers < self.MIN_WORKERS:
-            raise ValidationError(
-                f"max_sync_workers must be at least {self.MIN_WORKERS}"
-            )
-
-        if workers > self.MAX_WORKERS:
-            raise ValidationError(
-                f"max_sync_workers must be at most {self.MAX_WORKERS}"
-            )
-
-        return workers
+    def __init__(self) -> None:
+        super().__init__(min_value=1, max_value=16)
 
 
-class DownloadChunkSizeValidator(ConfigValidator):
+class DownloadChunkSizeValidator(IntegerValidator):
     """Validates the chunk size used when streaming downloads (bytes).
 
     Larger values reduce Python overhead per chunk and generally improve
     throughput on fast connections.  Smaller values reduce memory use.
+
+    .. deprecated::
+        Use ``IntegerValidator(min_value=4096, max_value=16_777_216)`` directly.
+        This class exists only for backward compatibility.
     """
 
-    MIN_BYTES = 4096       # 4 KB
-    MAX_BYTES = 16_777_216  # 16 MB
-
-    def validate(self, value: Any) -> int:
-        try:
-            size = int(value)
-        except (ValueError, TypeError):
-            raise ValidationError(f"download_chunk_size must be an integer, got: {value}")
-
-        if size < self.MIN_BYTES:
-            raise ValidationError(
-                f"download_chunk_size must be at least {self.MIN_BYTES} bytes (4 KB)"
-            )
-
-        if size > self.MAX_BYTES:
-            raise ValidationError(
-                f"download_chunk_size must be at most {self.MAX_BYTES} bytes (16 MB)"
-            )
-
-        return size
+    def __init__(self) -> None:
+        super().__init__(min_value=4096, max_value=16_777_216)
 
 
 # Registry of validators for known config keys
@@ -313,5 +279,6 @@ def validate_config_value(key: str, value: Any) -> Any:
     if key in VALIDATORS:
         return VALIDATORS[key].validate(value)
     
-    # Unknown keys pass through unchanged
+    # Warn about unrecognised keys — likely a typo
+    logger.warning(f"Unknown config key '{key}' — value accepted but no validation applied")
     return value

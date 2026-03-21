@@ -65,7 +65,7 @@ def test_state_save_load():
         config_dir = Path(tmpdir)
         config = Config(config_dir)
         
-        # Save state
+        # Save a file entry and reload it
         state_data = {
             'files': {
                 'test.txt': {'mtime': 1234567890, 'synced': True}
@@ -74,10 +74,15 @@ def test_state_save_load():
         }
         config.save_state(state_data)
         
-        # Load state
         loaded_state = config.load_state()
-        assert loaded_state == state_data
+        
+        # The backend normalises the file entry (adds eTag, downloaded, etc.)
+        # and adds top-level keys (delta_token, file_cache). Assert the
+        # fields we actually care about rather than exact dict equality.
         assert 'test.txt' in loaded_state['files']
+        loaded_file = loaded_state['files']['test.txt']
+        assert float(loaded_file['mtime']) == float(state_data['files']['test.txt']['mtime'])
+        assert loaded_state.get('last_sync') == '2024-01-01T00:00:00'
 
 
 if __name__ == '__main__':

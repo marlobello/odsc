@@ -103,8 +103,9 @@ class SyncDaemon:
         self._wakeup_event = threading.Event()
         self._state_lock = threading.Lock()
         
-        # Load sync state
+        # Load sync state and ensure all required keys are present
         self.state = self.config.load_state()
+        self._ensure_state_initialized()
         
         # Setup signal handlers
         self._setup_signal_handlers()
@@ -301,11 +302,12 @@ class SyncDaemon:
         
         sync_dir = self.config.sync_directory
         
-        # Reload state to pick up any GUI changes
-        self.state = self.config.load_state()
-        
-        # Initialize state
-        self._ensure_state_initialized()
+        # Reload state under lock to pick up any GUI-written changes, while
+        # preventing watchdog workers from writing to the old state object
+        # between our load and our initialization of the new state.
+        with self._state_lock:
+            self.state = self.config.load_state()
+            self._ensure_state_initialized()
         
         # Track items deleted from OneDrive in this sync cycle
         # This prevents re-uploading them if local deletion failed
@@ -364,11 +366,13 @@ class SyncDaemon:
                 changes, new_delta_token = self.client.get_delta(None)
                 logger.info(f"Initial sync: {len(changes)} total items")
             
-            self.state['delta_token'] = new_delta_token
+            with self._state_lock:
+                self.state['delta_token'] = new_delta_token
             
         except Exception as e:
             logger.error(f"Failed to fetch changes: {e}", exc_info=True)
-            self.state['delta_token'] = None
+            with self._state_lock:
+                self.state['delta_token'] = None
             return None
         
         # Process changes
@@ -430,6 +434,9 @@ class SyncDaemon:
         
         import shutil
         
+        # Persistent failure counters kept across syncs in state
+        failure_counts: Dict[str, int] = self.state.setdefault('_deletion_failures', {})
+        
         for path in list(self._deleted_from_remote):
             local_path = sync_dir / path
             
@@ -446,6 +453,7 @@ class SyncDaemon:
                 local_path.stat()
             except FileNotFoundError:
                 logger.debug(f"Deletion verified successful: {path}")
+                failure_counts.pop(path, None)  # Clear any previous failure count
                 continue
             
             # Deletion failed or incomplete - retry with more aggressive approach
@@ -473,6 +481,7 @@ class SyncDaemon:
                         # Still exists, continue retrying
                     except FileNotFoundError:
                         # Successfully deleted
+                        failure_counts.pop(path, None)
                         break
                     
                 except PermissionError as e:
@@ -481,15 +490,25 @@ class SyncDaemon:
                         logger.debug(f"Permission denied, will retry: {e}")
                         time.sleep(0.5)
                     else:
-                        logger.error(f"Permission denied after 3 attempts: {path}")
-                        logger.error(f"Folder will remain locally but won't be uploaded (tracked in _deleted_from_remote)")
+                        count = failure_counts.get(path, 0) + 1
+                        failure_counts[path] = count
+                        log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.error
+                        log_level(
+                            f"Permission denied after 3 attempts: {path} "
+                            f"(total failures: {count})"
+                        )
                 except Exception as e:
                     if attempt < 2:
                         logger.debug(f"Deletion failed, will retry: {e}")
                         time.sleep(0.5)
                     else:
-                        logger.error(f"Could not delete after 3 attempts: {path} - {e}")
-                        logger.error(f"Item will remain locally but won't be uploaded (tracked in _deleted_from_remote)")
+                        count = failure_counts.get(path, 0) + 1
+                        failure_counts[path] = count
+                        log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.error
+                        log_level(
+                            f"Could not delete after 3 attempts: {path} - {e} "
+                            f"(total failures: {count})"
+                        )
     
     def _process_remote_folder(self, item: Dict[str, Any], sync_dir: Path) -> None:
         """Process a folder from OneDrive delta."""
@@ -646,7 +665,7 @@ class SyncDaemon:
                     future.result()
                     sync_count[action] = sync_count.get(action, 0) + 1
                 except Exception as e:
-                    logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
+                    logger.error(f"Failed to {action} {rel_path}: {e}", exc_info=True)
         
         elapsed = time.time() - start_time
         logger.info(f"File sync completed in {elapsed:.2f}s: "
@@ -869,7 +888,6 @@ class SyncDaemon:
         """Finalize sync by updating state and cleaning up."""
         self.state['last_sync'] = datetime.now().isoformat()
         self.config.save_state(self.state)
-        self._cleanup_recycle_bin()
     
     def _move_to_recycle_bin(self, local_path: Path, rel_path: str) -> None:
         """Move file or folder to system recycle bin/trash.
@@ -900,16 +918,6 @@ class SyncDaemon:
                     logger.warning(f"Permanently deleted file (trash failed): {rel_path}")
             except Exception as e2:
                 logger.error(f"Failed to delete {rel_path}: {e2}")
-    
-    def _cleanup_recycle_bin(self) -> None:
-        """Clean up old recycle bin entries.
-        
-        Note: send2trash handles cleanup automatically through the OS.
-        This method is kept for future custom cleanup logic if needed.
-        """
-        # OS handles recycle bin cleanup automatically
-        # Could add custom logic here for tracking recycled files
-        pass
     
     def _determine_sync_action(self, rel_path: str, local_info: Optional[Dict], 
                                remote_info: Optional[Dict], state_entry: Dict) -> str:

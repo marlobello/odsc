@@ -38,6 +38,7 @@ setup(
         "cryptography>=41.0.0",
         "keyring>=24.0.0",
         "certifi>=2023.7.22",
+        "tenacity>=8.2.0",
     ],
     entry_points={
         "console_scripts": [
