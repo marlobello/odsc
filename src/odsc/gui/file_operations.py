@@ -105,8 +105,10 @@ class FileOperationsMixin:
         if not confirmed:
             return
         
-        for file_path_str, file_name in files_to_remove:
-            self._remove_local_file(file_path_str, file_name)
+        if len(files_to_remove) > 1:
+            self._remove_local_files_batch(files_to_remove)
+        else:
+            self._remove_local_file(*files_to_remove[0])
         
         GLib.timeout_add(500, self._update_button_states)
     
@@ -199,12 +201,71 @@ class FileOperationsMixin:
                 
             except Exception as e:
                 logger.error(f"Failed to remove local copy of {file_name}: {e}")
-                GLib.idle_add(self._show_error, f"Failed to remove: {e}")
+                GLib.idle_add(self._show_error, "Remove Failed", f"Failed to remove: {e}")
         
         thread = threading.Thread(target=remove_in_thread, daemon=True)
         thread.start()
-    
-    def _download_file(self, file_id: str, file_name: str) -> None:
+
+    def _remove_local_files_batch(self, files: list) -> None:
+        """Remove local copies of multiple files in a single background thread.
+
+        Spawns one worker thread, deletes all files, then does a single atomic
+        state save and a single UI refresh — avoiding the per-file thread storm
+        that caused the GTK main thread to freeze on large selections.
+
+        Args:
+            files: List of (rel_path, file_name) tuples to remove.
+        """
+        total = len(files)
+        GLib.idle_add(self._update_status, f"Removing {total} local files…")
+
+        def remove_batch():
+            success_count = 0
+            error_count = 0
+            not_downloaded_paths = []
+
+            for i, (rel_path, file_name) in enumerate(files, 1):
+                GLib.idle_add(self._update_status, f"Removing {i}/{total}: {file_name}")
+                try:
+                    local_path = validate_sync_path(rel_path, self.config.sync_directory)
+                    local_path.unlink(missing_ok=True)
+                    cleanup_empty_parent_dirs(local_path, self.config.sync_directory)
+                    not_downloaded_paths.append(rel_path)
+                    logger.info(f"Removed local copy: {rel_path}")
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to remove local copy of {file_name}: {e}", exc_info=True)
+                    error_count += 1
+
+            # Single atomic state update + save
+            try:
+                for rel_path in not_downloaded_paths:
+                    self._state_mgr.mark_file_not_downloaded(rel_path)
+                self._state_mgr.save()
+            except Exception as e:
+                logger.error(f"Failed to save state after batch remove: {e}")
+
+            if error_count > 0:
+                GLib.idle_add(
+                    self._update_status,
+                    f"Removed {success_count}/{total} files ({error_count} failed)"
+                )
+                GLib.idle_add(
+                    self._show_error,
+                    "Remove Incomplete",
+                    f"Removed {success_count} files successfully.\n{error_count} files failed."
+                )
+            else:
+                GLib.idle_add(self._update_status, f"Removed all {total} local files")
+
+            # Single UI refresh at the end
+            GLib.idle_add(self._load_remote_files)
+            GLib.idle_add(self._update_button_states)
+
+        thread = threading.Thread(target=remove_batch, daemon=True)
+        thread.start()
+
+
         """Download file from OneDrive.
         
         Args:
