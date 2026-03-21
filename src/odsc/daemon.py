@@ -712,7 +712,11 @@ class SyncDaemon:
                 remote_info['id'], local_path,
                 chunk_size=self.config.download_chunk_size,
             )
-            self.state_mgr.set_file_entry(rel_path, local_path.stat().st_mtime, remote_info['size'], remote_info)
+            try:
+                mtime = local_path.stat().st_mtime
+            except FileNotFoundError:
+                mtime = 0.0
+            self.state_mgr.set_file_entry(rel_path, mtime, remote_info['size'], remote_info)
         except Exception as download_err:
             logger.error(f"Download failed for {rel_path}: {download_err}")
     
@@ -1013,11 +1017,20 @@ class SyncDaemon:
             return
         
         try:
+            # Stat before upload — file may disappear after the upload completes
+            # (e.g. transient .tmp files created by other applications)
+            try:
+                mtime = path.stat().st_mtime
+                size = path.stat().st_size
+            except FileNotFoundError:
+                logger.info(f"File vanished before upload, skipping: {rel_path}")
+                return
+
             # Upload file
             metadata = self.client.upload_file(path, str(rel_path))
             
             # Update state - clear any previous error
-            self.state_mgr.set_file_entry(str(rel_path), path.stat().st_mtime, path.stat().st_size, metadata)
+            self.state_mgr.set_file_entry(str(rel_path), mtime, size, metadata)
             self.state_mgr.save()
             
             logger.info(f"Synced file: {rel_path}")
@@ -1026,8 +1039,14 @@ class SyncDaemon:
             error_msg = str(e)
             logger.error(f"Failed to sync {rel_path}: {error_msg}", exc_info=True)
             
-            # Track failed upload in state
-            self.state_mgr.set_file_entry(str(rel_path), path.stat().st_mtime, path.stat().st_size, error=error_msg)
+            # Track failed upload — use already-captured mtime/size if available,
+            # otherwise fall back to zeros (file may have been deleted mid-upload)
+            try:
+                entry_mtime = mtime
+                entry_size = size
+            except NameError:
+                entry_mtime, entry_size = 0.0, 0
+            self.state_mgr.set_file_entry(str(rel_path), entry_mtime, entry_size, error=error_msg)
             self.state_mgr.save()
 
 
