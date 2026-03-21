@@ -76,8 +76,9 @@ jobs:
       - name: Stamp version into install.sh
         run: |
           # Replace ODSC_RELEASE_VERSION placeholder in install.sh with actual version
-          sed "s/__ODSC_RELEASE_VERSION__/$VERSION/g" install.sh > install-release.sh
-          chmod +x install-release.sh
+          # and output directly as install.sh so the asset has the right name
+          sed "s/__ODSC_RELEASE_VERSION__/$VERSION/g" install.sh > dist/install.sh
+          chmod +x dist/install.sh
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -97,5 +98,5 @@ jobs:
             See [README](https://github.com/marlobello/odsc#readme) for full instructions.
           generate_release_notes: true
           files: |
-            install-release.sh:install.sh
+            dist/install.sh
             dist/odsc-${{ steps.version.outputs.version }}.tar.gz
