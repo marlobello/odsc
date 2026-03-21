@@ -44,6 +44,7 @@ class SyncEventHandler(FileSystemEventHandler):
         """
         self.daemon = daemon
         self.pending_changes: Set[Path] = set()
+        self.pending_moves: Dict[Path, tuple] = {}  # src → (dst, is_directory)
         self._lock = threading.Lock()
     
     def on_modified(self, event: FileSystemEvent) -> None:
@@ -60,6 +61,15 @@ class SyncEventHandler(FileSystemEventHandler):
         """Handle file deletion event."""
         if not event.is_directory:
             self._queue_change(Path(event.src_path))
+
+    def on_moved(self, event: FileSystemEvent) -> None:
+        """Handle file or directory rename/move event."""
+        src = Path(event.src_path)
+        dst = Path(event.dest_path)
+        with self._lock:
+            self.pending_moves[src] = (dst, event.is_directory)
+        logger.debug(f"Queued move: {src} → {dst}")
+        self.daemon._wakeup_event.set()
     
     def _queue_change(self, path: Path) -> None:
         """Queue a file change for processing.
@@ -82,6 +92,17 @@ class SyncEventHandler(FileSystemEventHandler):
             changes = self.pending_changes.copy()
             self.pending_changes.clear()
         return changes
+
+    def get_pending_moves(self) -> Dict[Path, tuple]:
+        """Get and clear pending move/rename events.
+
+        Returns:
+            Dict mapping src Path → (dst Path, is_directory)
+        """
+        with self._lock:
+            moves = self.pending_moves.copy()
+            self.pending_moves.clear()
+        return moves
 
 
 class SyncDaemon:
@@ -234,6 +255,13 @@ class SyncDaemon:
         """Main sync loop (runs periodically)."""
         while self._running:
             try:
+                # Process any pending rename/move events first so that
+                # subsequent file-change events see the updated paths.
+                if self.event_handler:
+                    pending_moves = self.event_handler.get_pending_moves()
+                    for src, (dst, is_dir) in pending_moves.items():
+                        self._sync_move(src, dst, is_dir)
+
                 # Process any pending file changes
                 if self.event_handler:
                     pending = self.event_handler.get_pending_changes()
@@ -995,7 +1023,84 @@ class SyncDaemon:
         """Check if remote file has been modified since last sync."""
         return (state_entry.get('eTag', '') != remote_info['eTag'] or
                 state_entry.get('remote_modified', '') != remote_info['lastModifiedDateTime'])
-    
+
+    def _sync_move(self, src_path: Path, dst_path: Path, is_dir: bool = False) -> None:
+        """Handle a local rename or move by mirroring it on OneDrive.
+
+        When watchdog fires a ``FileMovedEvent`` or ``DirMovedEvent`` we have
+        the old and new paths atomically, so we can issue a single PATCH
+        request on OneDrive instead of creating a duplicate.
+
+        Fallback: if the old item isn't tracked in the cache (was never
+        synced) we queue the destination for a normal upload.
+
+        Args:
+            src_path: Original absolute path (before the rename/move).
+            dst_path: New absolute path (after the rename/move).
+            is_dir:   True when a directory (tree) was moved.
+        """
+        sync_dir = self.config.sync_directory
+
+        # Resolve source relative path (must be inside sync dir)
+        try:
+            src_rel = str(src_path.relative_to(sync_dir))
+        except ValueError:
+            logger.debug(f"Move source outside sync dir, ignoring: {src_path}")
+            return
+
+        # Resolve destination relative path
+        try:
+            dst_rel = str(dst_path.relative_to(sync_dir))
+        except ValueError:
+            # Destination is outside the sync folder — treat as local-only deletion
+            logger.info(f"Item moved out of sync directory, leaving copy on OneDrive: {src_rel}")
+            if is_dir:
+                self.state_mgr.rename_entries_with_prefix(src_rel, "")
+            else:
+                self.state_mgr.remove_file_entry(src_rel)
+            self.state_mgr.save()
+            return
+
+        # Look up OneDrive item ID from cache
+        cache_entry = self.state_mgr.get_cache_entry(src_rel)
+        if cache_entry is None or not cache_entry.get("id"):
+            # Never synced — queue destination path for a regular upload/scan
+            logger.info(f"Moved item not yet tracked, queuing for upload: {dst_path}")
+            if self.event_handler and not is_dir:
+                self.event_handler._queue_change(dst_path)
+            return
+
+        item_id = cache_entry["id"]
+        new_name = dst_path.name
+        dst_parent = str(Path(dst_rel).parent)
+        src_parent = str(Path(src_rel).parent)
+        # '.' means root of sync folder
+        dst_parent = "" if dst_parent == "." else dst_parent
+        src_parent = "" if src_parent == "." else src_parent
+        same_parent = (src_parent == dst_parent)
+
+        try:
+            if same_parent:
+                self.client.move_item(item_id, new_name)
+                logger.info(f"Renamed on OneDrive: {src_rel!r} → {dst_rel!r}")
+            else:
+                self.client.move_item(item_id, new_name, dst_parent)
+                logger.info(f"Moved on OneDrive: {src_rel!r} → {dst_rel!r}")
+
+            # Update state to reflect new path(s)
+            if is_dir:
+                renamed = self.state_mgr.rename_entries_with_prefix(src_rel, dst_rel)
+                logger.debug(f"Renamed {renamed} state entries for directory move")
+            else:
+                self.state_mgr.rename_entry(src_rel, dst_rel)
+            self.state_mgr.save()
+
+        except Exception as e:
+            logger.error(f"Failed to move {src_rel!r} → {dst_rel!r}: {e}", exc_info=True)
+            # Fall back: queue destination for a normal upload
+            if self.event_handler and not is_dir:
+                self.event_handler._queue_change(dst_path)
+
     def _sync_file(self, path: Path) -> None:
         """Sync a single file to OneDrive.
         

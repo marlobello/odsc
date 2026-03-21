@@ -154,7 +154,39 @@ class SyncStateManager:
         with self._lock:
             self._state["files"].update(updates)
 
-    def mark_file_not_downloaded(self, rel_path: str) -> None:
+    def rename_entry(self, old_path: str, new_path: str) -> None:
+        """Rename a single path in both ``files`` and ``file_cache``.
+
+        Used after a successful OneDrive rename/move to keep state consistent.
+        No-ops silently if *old_path* is absent.
+        """
+        with self._lock:
+            for store in (self._state["files"], self._state["file_cache"]):
+                if old_path in store:
+                    store[new_path] = store.pop(old_path)
+
+    def rename_entries_with_prefix(self, old_prefix: str, new_prefix: str) -> int:
+        """Rename every path that starts with *old_prefix* to use *new_prefix*.
+
+        Used after a directory rename/move to update all child paths atomically.
+
+        Returns:
+            Number of entries renamed.
+        """
+        count = 0
+        with self._lock:
+            for store in (self._state["files"], self._state["file_cache"]):
+                matches = [
+                    k for k in store
+                    if k == old_prefix or k.startswith(old_prefix + "/")
+                ]
+                for old_key in matches:
+                    new_key = new_prefix + old_key[len(old_prefix):]
+                    store[new_key] = store.pop(old_key)
+                    count += 1
+        return count
+
+
         """Set ``downloaded=False`` for *rel_path* (used by GUI on remove)."""
         with self._lock:
             self._ensure_initialized()

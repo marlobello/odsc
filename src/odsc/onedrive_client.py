@@ -564,6 +564,36 @@ class OneDriveClient:
                     logger.warning(f"Could not get metadata for existing folder: {get_err}")
             raise
     
+    def move_item(
+        self,
+        item_id: str,
+        new_name: str,
+        new_parent_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Rename and/or move an item on OneDrive in a single PATCH request.
+
+        Args:
+            item_id: OneDrive item ID of the file or folder to move.
+            new_name: New name for the item (basename only).
+            new_parent_path: New parent folder path relative to the sync root
+                (e.g. ``"Photos/Vacation"``).  Pass ``""`` to move to the root.
+                If *None* the parent is unchanged (rename only).
+
+        Returns:
+            Updated item metadata from OneDrive.
+        """
+        body: Dict[str, Any] = {"name": new_name}
+        if new_parent_path is not None:
+            root_ref = "/drive/root:"
+            if new_parent_path:
+                root_ref = f"/drive/root:/{new_parent_path}"
+            body["parentReference"] = {"path": root_ref}
+
+        response = self._api_request("PATCH", f"/me/drive/items/{item_id}", json=body)
+        metadata = response.json()
+        logger.info(f"Moved/renamed OneDrive item {item_id} → {new_name}")
+        return metadata
+
     def delete_file(self, file_id: str) -> None:
         """Delete file from OneDrive.
         
