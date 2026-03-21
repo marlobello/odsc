@@ -19,6 +19,7 @@ from .config import Config
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
 from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
+from .sync_state import SyncStateManager
 
 # Try to import system tray (optional - may not be available in headless environments)
 try:
@@ -101,11 +102,9 @@ class SyncDaemon:
         self.system_tray: Optional['SystemTrayIndicator'] = None
         self._tray_thread: Optional[threading.Thread] = None
         self._wakeup_event = threading.Event()
-        self._state_lock = threading.Lock()
-        
-        # Load sync state and ensure all required keys are present
-        self.state = self.config.load_state()
-        self._ensure_state_initialized()
+
+        self.state_mgr = SyncStateManager(self.config.load_state, self.config.save_state)
+        self.state_mgr.load()
         
         # Setup signal handlers
         self._setup_signal_handlers()
@@ -269,7 +268,7 @@ class SyncDaemon:
         Returns:
             True if periodic sync needed
         """
-        last_sync = self.state.get('last_sync')
+        last_sync = self.state_mgr.last_sync
         if not last_sync:
             return True
         
@@ -302,12 +301,9 @@ class SyncDaemon:
         
         sync_dir = self.config.sync_directory
         
-        # Reload state under lock to pick up any GUI-written changes, while
-        # preventing watchdog workers from writing to the old state object
-        # between our load and our initialization of the new state.
-        with self._state_lock:
-            self.state = self.config.load_state()
-            self._ensure_state_initialized()
+        # Reload state to pick up any GUI-written changes while preventing
+        # watchdog workers from racing against the replacement.
+        self.state_mgr.reload()
         
         # Track items deleted from OneDrive in this sync cycle
         # This prevents re-uploading them if local deletion failed
@@ -341,20 +337,13 @@ class SyncDaemon:
         
         logger.info("Periodic sync completed")
     
-    def _ensure_state_initialized(self) -> None:
-        """Ensure state dictionaries are initialized."""
-        if 'files' not in self.state:
-            self.state['files'] = {}
-        if 'file_cache' not in self.state:
-            self.state['file_cache'] = {}
-    
     def _fetch_and_process_remote_changes(self, sync_dir: Path) -> Optional[Dict[str, Any]]:
         """Fetch changes from OneDrive and process them.
         
         Returns:
             Dictionary of remote files, or None if error occurred
         """
-        delta_token = self.state.get('delta_token')
+        delta_token = self.state_mgr.delta_token
         
         # Fetch changes using delta query
         logger.info("Fetching changes from OneDrive using delta query...")
@@ -366,13 +355,11 @@ class SyncDaemon:
                 changes, new_delta_token = self.client.get_delta(None)
                 logger.info(f"Initial sync: {len(changes)} total items")
             
-            with self._state_lock:
-                self.state['delta_token'] = new_delta_token
+            self.state_mgr.delta_token = new_delta_token
             
         except Exception as e:
             logger.error(f"Failed to fetch changes: {e}", exc_info=True)
-            with self._state_lock:
-                self.state['delta_token'] = None
+            self.state_mgr.delta_token = None
             return None
         
         # Process changes
@@ -398,7 +385,7 @@ class SyncDaemon:
     def _process_remote_deletion(self, item: Dict[str, Any]) -> None:
         """Process a deleted item from OneDrive (file or folder)."""
         item_id = item['id']
-        for path, cached_item in list(self.state['file_cache'].items()):
+        for path, cached_item in self.state_mgr.all_cache_items():
             if cached_item.get('id') == item_id:
                 is_folder = 'folder' in cached_item or cached_item.get('is_folder', False)
                 item_type = "folder" if is_folder else "file"
@@ -417,7 +404,7 @@ class SyncDaemon:
                     logger.debug(f"Local path doesn't exist (may have been deleted already): {path}")
                 
                 # Remove from cache and state
-                self._remove_from_cache(path)
+                self.state_mgr.remove_file_entry(path)
                 break
     
     def _verify_and_retry_deletions(self, sync_dir: Path) -> None:
@@ -433,9 +420,6 @@ class SyncDaemon:
             return  # Nothing to verify
         
         import shutil
-        
-        # Persistent failure counters kept across syncs in state
-        failure_counts: Dict[str, int] = self.state.setdefault('_deletion_failures', {})
         
         for path in list(self._deleted_from_remote):
             local_path = sync_dir / path
@@ -453,7 +437,7 @@ class SyncDaemon:
                 local_path.stat()
             except FileNotFoundError:
                 logger.debug(f"Deletion verified successful: {path}")
-                failure_counts.pop(path, None)  # Clear any previous failure count
+                self.state_mgr.clear_deletion_failure(path)  # Clear any previous failure count
                 continue
             
             # Deletion failed or incomplete - retry with more aggressive approach
@@ -481,7 +465,7 @@ class SyncDaemon:
                         # Still exists, continue retrying
                     except FileNotFoundError:
                         # Successfully deleted
-                        failure_counts.pop(path, None)
+                        self.state_mgr.clear_deletion_failure(path)
                         break
                     
                 except PermissionError as e:
@@ -490,8 +474,7 @@ class SyncDaemon:
                         logger.debug(f"Permission denied, will retry: {e}")
                         time.sleep(0.5)
                     else:
-                        count = failure_counts.get(path, 0) + 1
-                        failure_counts[path] = count
+                        count = self.state_mgr.increment_deletion_failure(path)
                         log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.error
                         log_level(
                             f"Permission denied after 3 attempts: {path} "
@@ -502,8 +485,7 @@ class SyncDaemon:
                         logger.debug(f"Deletion failed, will retry: {e}")
                         time.sleep(0.5)
                     else:
-                        count = failure_counts.get(path, 0) + 1
-                        failure_counts[path] = count
+                        count = self.state_mgr.increment_deletion_failure(path)
                         log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.error
                         log_level(
                             f"Could not delete after 3 attempts: {path} - {e} "
@@ -520,7 +502,7 @@ class SyncDaemon:
             
             full_path = extract_item_path(item)
             validate_sync_path(full_path, sync_dir)
-            self.state['file_cache'][full_path] = item
+            self.state_mgr.set_cache_entry(full_path, item)
         except (SecurityError, Exception) as e:
             logger.warning(f"Skipping unsafe folder: {e}")
     
@@ -542,7 +524,7 @@ class SyncDaemon:
             }
             
             # Update cache
-            self.state['file_cache'][full_path] = {**metadata, 'is_folder': False}
+            self.state_mgr.set_cache_entry(full_path, {**metadata, 'is_folder': False})
             
             return {'path': full_path, 'metadata': metadata}
             
@@ -590,25 +572,17 @@ class SyncDaemon:
     
     def _get_all_remote_files(self) -> Dict[str, Any]:
         """Get all remote files from cache (excluding folders)."""
-        all_remote_files = {}
-        for path, cached in self.state['file_cache'].items():
-            if not ('folder' in cached or cached.get('is_folder', False)):
-                all_remote_files[path] = cached
-        
+        all_remote_files = self.state_mgr.all_remote_files()
         logger.info(f"Total remote files in cache: {len(all_remote_files)}")
         return all_remote_files
     
     def _get_all_remote_folders(self) -> Dict[str, Any]:
         """Get all remote folders from cache."""
-        all_remote_folders = {}
-        for path, cached in self.state['file_cache'].items():
-            # Skip the drive root itself
-            if 'root' in cached or path == 'root':
-                continue
-            
-            if 'folder' in cached or cached.get('is_folder', False):
-                all_remote_folders[path] = cached
-        
+        all_remote_folders = {
+            path: meta
+            for path, meta in self.state_mgr.all_remote_folders().items()
+            if 'root' not in meta and path != 'root'
+        }
         logger.info(f"Total remote folders in cache: {len(all_remote_folders)}")
         return all_remote_folders
     
@@ -628,7 +602,7 @@ class SyncDaemon:
         
         for rel_path, local_info in local_files.items():
             remote_info = remote_files.get(rel_path) or all_remote_files.get(rel_path)
-            state_entry = self.state['files'].get(rel_path, {})
+            state_entry = self.state_mgr.get_file_entry(rel_path)
             try:
                 action = self._determine_sync_action(rel_path, local_info, remote_info, state_entry)
                 pending_actions.append((action, rel_path, local_info, remote_info))
@@ -640,7 +614,7 @@ class SyncDaemon:
             if rel_path in processed:
                 continue
             local_info = local_files.get(rel_path)
-            state_entry = self.state['files'].get(rel_path, {})
+            state_entry = self.state_mgr.get_file_entry(rel_path)
             try:
                 action = self._determine_sync_action(rel_path, local_info, remote_info, state_entry)
                 pending_actions.append((action, rel_path, local_info, remote_info))
@@ -692,7 +666,7 @@ class SyncDaemon:
         """
         stale_paths = []
         
-        for path in self.state.get('files', {}).keys():
+        for path in self.state_mgr.all_tracked_paths():
             # If file exists locally or remotely, keep the state
             if path in local_files or path in all_remote_files:
                 continue
@@ -702,7 +676,7 @@ class SyncDaemon:
         
         if stale_paths:
             for path in stale_paths:
-                del self.state['files'][path]
+                self.state_mgr.remove_file_entry(path)
             logger.debug(f"Cleaned up {len(stale_paths)} stale state entries")
     
     def _execute_sync_action(self, action: str, rel_path: str, sync_dir: Path, 
@@ -719,55 +693,15 @@ class SyncDaemon:
         elif action == 'skip':
             logger.debug(f"Skipping (up to date): {rel_path}")
     
-    def _update_file_state(self, rel_path: str, mtime: float, size: int, 
-                          metadata: Optional[Dict] = None, error: Optional[str] = None) -> None:
-        """Update file state in sync tracking.
-        
-        Args:
-            rel_path: Relative file path
-            mtime: File modification time
-            size: File size
-            metadata: OneDrive metadata (eTag, lastModifiedDateTime) if successful
-            error: Error message if sync failed
-        """
-        state_entry = {
-            'mtime': mtime,
-            'size': size,
-            'downloaded': True,
-        }
-        
-        if error:
-            state_entry['upload_error'] = error
-        else:
-            state_entry['eTag'] = metadata.get('eTag', '') if metadata else ''
-            state_entry['remote_modified'] = metadata.get('lastModifiedDateTime', '') if metadata else ''
-            state_entry['upload_error'] = None
-        
-        with self._state_lock:
-            self.state['files'][rel_path] = state_entry
-    
-    def _remove_from_cache(self, path: str) -> None:
-        """Remove item from cache and file state.
-        
-        Args:
-            path: Relative path to remove
-        """
-        with self._state_lock:
-            if path in self.state.get('files', {}):
-                del self.state['files'][path]
-            if path in self.state.get('file_cache', {}):
-                del self.state['file_cache'][path]
-                logger.debug(f"Removed {path} from cache")
-    
     def _upload_file(self, rel_path: str, local_info: Dict) -> None:
         """Upload a local file to OneDrive."""
         logger.info(f"Uploading: {rel_path}")
         try:
             metadata = self.client.upload_file(local_info['path'], rel_path)
-            self._update_file_state(rel_path, local_info['mtime'], local_info['size'], metadata)
+            self.state_mgr.set_file_entry(rel_path, local_info['mtime'], local_info['size'], metadata)
         except Exception as upload_err:
             logger.error(f"Upload failed for {rel_path}: {upload_err}")
-            self._update_file_state(rel_path, local_info['mtime'], local_info['size'], error=str(upload_err))
+            self.state_mgr.set_file_entry(rel_path, local_info['mtime'], local_info['size'], error=str(upload_err))
     
     def _download_file(self, rel_path: str, sync_dir: Path, remote_info: Dict) -> None:
         """Download a file from OneDrive."""
@@ -778,7 +712,7 @@ class SyncDaemon:
                 remote_info['id'], local_path,
                 chunk_size=self.config.download_chunk_size,
             )
-            self._update_file_state(rel_path, local_path.stat().st_mtime, remote_info['size'], remote_info)
+            self.state_mgr.set_file_entry(rel_path, local_path.stat().st_mtime, remote_info['size'], remote_info)
         except Exception as download_err:
             logger.error(f"Download failed for {rel_path}: {download_err}")
     
@@ -787,7 +721,7 @@ class SyncDaemon:
         logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
         local_path = validate_sync_path(rel_path, sync_dir)
         self._move_to_recycle_bin(local_path, rel_path)
-        self._remove_from_cache(rel_path)
+        self.state_mgr.remove_file_entry(rel_path)
     
     def _handle_file_conflict(self, rel_path: str, sync_dir: Path, remote_info: Dict) -> None:
         """Handle a file conflict by keeping both versions."""
@@ -834,7 +768,7 @@ class SyncDaemon:
         
         for folder_path in local_folders:
             # Check if folder was previously in cache (was synced before)
-            if folder_path in self.state.get('file_cache', {}):
+            if self.state_mgr.get_cache_entry(folder_path) is not None:
                 # Folder was synced before, check if it still exists on OneDrive
                 if folder_path not in all_remote_folders:
                     # Folder was deleted from OneDrive
@@ -847,7 +781,7 @@ class SyncDaemon:
                 self._move_to_recycle_bin(local_path, folder_path)
                 
                 del local_folders[folder_path]
-                self._remove_from_cache(folder_path)
+                self.state_mgr.remove_file_entry(folder_path)
             except Exception as e:
                 logger.error(f"Failed to remove local folder {folder_path}: {e}")
     
@@ -866,7 +800,7 @@ class SyncDaemon:
                 try:
                     logger.info(f"Creating folder on OneDrive: {folder_path}")
                     metadata = self.client.create_folder(folder_path)
-                    self.state['file_cache'][folder_path] = metadata
+                    self.state_mgr.set_cache_entry(folder_path, metadata)
                     logger.info(f"Folder created on OneDrive: {folder_path}")
                 except Exception as e:
                     logger.error(f"Failed to create folder {folder_path} on OneDrive: {e}")
@@ -886,8 +820,8 @@ class SyncDaemon:
     
     def _finalize_sync(self) -> None:
         """Finalize sync by updating state and cleaning up."""
-        self.state['last_sync'] = datetime.now().isoformat()
-        self.config.save_state(self.state)
+        self.state_mgr.mark_sync_complete()
+        self.state_mgr.save()
     
     def _move_to_recycle_bin(self, local_path: Path, rel_path: str) -> None:
         """Move file or folder to system recycle bin/trash.
@@ -971,7 +905,7 @@ class SyncDaemon:
         """
         if not state_entry:
             # Check if file is in cache (was on OneDrive before deletion)
-            if rel_path in self.state.get('file_cache', {}):
+            if self.state_mgr.get_cache_entry(rel_path) is not None:
                 logger.info(f"{rel_path} was deleted remotely (found in cache), moving to recycle bin")
                 return 'recycle'
             # Never synced before, upload it
@@ -1083,8 +1017,8 @@ class SyncDaemon:
             metadata = self.client.upload_file(path, str(rel_path))
             
             # Update state - clear any previous error
-            self._update_file_state(str(rel_path), path.stat().st_mtime, path.stat().st_size, metadata)
-            self.config.save_state(self.state)
+            self.state_mgr.set_file_entry(str(rel_path), path.stat().st_mtime, path.stat().st_size, metadata)
+            self.state_mgr.save()
             
             logger.info(f"Synced file: {rel_path}")
             
@@ -1093,11 +1027,8 @@ class SyncDaemon:
             logger.error(f"Failed to sync {rel_path}: {error_msg}", exc_info=True)
             
             # Track failed upload in state
-            if 'files' not in self.state:
-                self.state['files'] = {}
-            
-            self._update_file_state(str(rel_path), path.stat().st_mtime, path.stat().st_size, error=error_msg)
-            self.config.save_state(self.state)
+            self.state_mgr.set_file_entry(str(rel_path), path.stat().st_mtime, path.stat().st_size, error=error_msg)
+            self.state_mgr.save()
 
 
 def main():

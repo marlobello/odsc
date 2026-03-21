@@ -42,13 +42,10 @@ Performance:
 
 import json
 import logging
-import base64
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from cryptography.fernet import Fernet, InvalidToken
-import keyring
-
+from .token_store import TokenStore
 from .validators import validate_config_value, ValidationError
 from .backends import StateBackend, SqliteStateBackend
 
@@ -83,6 +80,7 @@ class Config:
         
         self._config: Dict[str, Any] = {}
         self._backend: Optional[StateBackend] = None
+        self._token_store = TokenStore(self.token_path)
         self.load()
         self._init_backend()
     
@@ -215,136 +213,19 @@ class Config:
         """Chunk size in bytes used when streaming file downloads."""
         return self._config.get('download_chunk_size', 65536)
     
-    def _get_encryption_key(self) -> bytes:
-        """Get or create encryption key from system keyring.
-        
-        Returns:
-            Encryption key bytes
-        """
-        service_name = "odsc"
-        key_name = "token_encryption_key"
-        
-        # Try to get existing key
-        key_str = keyring.get_password(service_name, key_name)
-        
-        if key_str:
-            # Decode existing key
-            return base64.b64decode(key_str.encode())
-        
-        # If a token file already exists, the key must be in the keyring.
-        # Generating a new key here would cause decryption to fail and
-        # subsequently delete the token file — guard against this race
-        # condition (e.g. keyring not yet unlocked at login).
-        if self.token_path.exists():
-            raise RuntimeError(
-                "Encryption key not found in keyring but token file exists. "
-                "The keyring may be locked or temporarily unavailable."
-            )
-        
-        # No token exists yet — safe to generate a new key
-        key = Fernet.generate_key()
-        
-        # Store in keyring
-        key_str = base64.b64encode(key).decode()
-        keyring.set_password(service_name, key_name, key_str)
-        
-        logger.info("Generated new encryption key")
-        return key
-    
-    def _encrypt_token(self, token_data: Dict[str, Any]) -> bytes:
-        """Encrypt token data.
-        
-        Args:
-            token_data: Token data dictionary
-            
-        Returns:
-            Encrypted token bytes
-        """
-        key = self._get_encryption_key()
-        fernet = Fernet(key)
-        
-        # Serialize and encrypt
-        json_str = json.dumps(token_data)
-        encrypted = fernet.encrypt(json_str.encode())
-        
-        return encrypted
-    
-    def _decrypt_token(self, encrypted_data: bytes) -> Dict[str, Any]:
-        """Decrypt token data.
-        
-        Args:
-            encrypted_data: Encrypted token bytes
-            
-        Returns:
-            Decrypted token data dictionary
-            
-        Raises:
-            ValueError: If decryption fails
-        """
-        try:
-            key = self._get_encryption_key()
-            fernet = Fernet(key)
-            
-            # Decrypt and deserialize
-            decrypted = fernet.decrypt(encrypted_data)
-            token_data = json.loads(decrypted.decode())
-            
-            return token_data
-        except InvalidToken:
-            # Token data is genuinely corrupted or wrong key — safe to delete
-            raise ValueError("Invalid or corrupted token data")
-        except ValueError:
-            raise
-        except Exception:
-            # Keyring or other transient error — do NOT wrap as ValueError;
-            # re-raise so load_token() skips the deletion path.
-            raise
-    
     def save_token(self, token_data: Dict[str, Any]) -> None:
         """Save encrypted OneDrive authentication token.
-        
-        Args:
-            token_data: Token data dictionary
+
+        Delegates to :class:`~odsc.token_store.TokenStore`.
         """
-        # Encrypt token data
-        encrypted = self._encrypt_token(token_data)
-        
-        # Write encrypted data
-        self.token_path.write_bytes(encrypted)
-        
-        # Secure file permissions (owner read/write only)
-        self.token_path.chmod(0o600)
-        
-        logger.info("Token saved with encryption")
-    
+        self._token_store.save(token_data)
+
     def load_token(self) -> Optional[Dict[str, Any]]:
         """Load and decrypt OneDrive authentication token.
-        
-        Returns:
-            Token data or None if not found
+
+        Delegates to :class:`~odsc.token_store.TokenStore`.
         """
-        if not self.token_path.exists():
-            return None
-        
-        try:
-            # Read encrypted data
-            encrypted_data = self.token_path.read_bytes()
-            
-            # Try to decrypt
-            token_data = self._decrypt_token(encrypted_data)
-            logger.info("Token loaded and decrypted successfully")
-            return token_data
-            
-        except ValueError as e:
-            # Decryption failed - likely old plaintext token or corrupted
-            logger.warning(f"Could not decrypt token: {e}")
-            logger.warning("Token file may be from old version - please re-authenticate")
-            # Delete invalid token
-            self.token_path.unlink(missing_ok=True)
-            return None
-        except Exception as e:
-            logger.error(f"Error loading token: {e}")
-            return None
+        return self._token_store.load()
     
     def save_state(self, state_data: Dict[str, Any]) -> None:
         """Save sync state using backend.

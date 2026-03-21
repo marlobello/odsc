@@ -10,6 +10,7 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 
 from ..path_utils import sanitize_onedrive_path, validate_sync_path, cleanup_empty_parent_dirs
+from ..sync_state import SyncStateManager
 from .dialogs import DialogHelper
 
 logger = logging.getLogger(__name__)
@@ -17,15 +18,29 @@ logger = logging.getLogger(__name__)
 
 class FileOperationsMixin:
     """Mixin for file download, upload, and remove operations."""
-    
+
+    @property
+    def _state_mgr(self) -> SyncStateManager:
+        """Lazily-created SyncStateManager that shares the config backend.
+
+        Using the SyncStateManager instead of raw ``config.load_state()`` /
+        ``config.save_state()`` calls ensures state writes are atomic and
+        correctly interleave with the daemon's own writes.
+        """
+        if not hasattr(self, "_file_ops_state_mgr"):
+            self._file_ops_state_mgr = SyncStateManager(
+                self.config.load_state, self.config.save_state
+            )
+        return self._file_ops_state_mgr
+
     def _on_keep_local_clicked(self, widget) -> None:
         """Handle keep local copy button click."""
         selection = self.file_tree.get_selection()
         model, paths = selection.get_selected_rows()
-        
+
         if not paths:
             return
-        
+
         files_to_download = []
         
         for path in paths:
@@ -176,10 +191,8 @@ class FileOperationsMixin:
                 
                 cleanup_empty_parent_dirs(local_path, self.config.sync_directory)
                 
-                state = self.config.load_state()
-                if 'files' in state and rel_path in state['files']:
-                    state['files'][rel_path]['downloaded'] = False
-                    self.config.save_state(state)
+                self._state_mgr.mark_file_not_downloaded(rel_path)
+                self._state_mgr.save()
                 
                 GLib.idle_add(self._update_status, f"Removed local copy of {file_name}")
                 GLib.idle_add(self._load_remote_files)
@@ -215,19 +228,13 @@ class FileOperationsMixin:
                     chunk_size=self.config.download_chunk_size,
                 )
                 
-                state = self.config.load_state()
-                if 'files' not in state:
-                    state['files'] = {}
-                
-                state['files'][rel_path] = {
-                    'mtime': local_path.stat().st_mtime,
-                    'size': file_info.get('size', 0),
-                    'eTag': metadata.get('eTag', ''),
-                    'remote_modified': metadata.get('lastModifiedDateTime', ''),
-                    'downloaded': True,
-                    'upload_error': None,
-                }
-                self.config.save_state(state)
+                self._state_mgr.set_file_entry(
+                    rel_path,
+                    mtime=local_path.stat().st_mtime,
+                    size=file_info.get('size', 0),
+                    metadata=metadata,
+                )
+                self._state_mgr.save()
                 
                 logger.info(f"Downloaded and marked for sync: {rel_path}")
                 GLib.idle_add(self._update_status, f"Downloaded {file_name}")
@@ -294,11 +301,8 @@ class FileOperationsMixin:
                         error_count += 1
             
             try:
-                state = self.config.load_state()
-                if 'files' not in state:
-                    state['files'] = {}
-                state['files'].update(state_updates)
-                self.config.save_state(state)
+                self._state_mgr.patch_file_entries(state_updates)
+                self._state_mgr.save()
                 logger.info(f"Batch download complete: {success_count} succeeded, {error_count} failed")
             except Exception as e:
                 logger.error(f"Failed to save state after batch download: {e}")

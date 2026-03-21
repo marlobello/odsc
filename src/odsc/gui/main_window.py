@@ -2,7 +2,6 @@
 
 import html
 import logging
-import subprocess
 import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -18,6 +17,7 @@ from ..onedrive_client import OneDriveClient
 from ..logging_config import setup_logging
 from ..path_utils import sanitize_onedrive_path, validate_sync_path, SecurityError
 from ..services.file_cache_service import FileCacheService
+from .daemon_controller import DaemonController
 from .dialogs import DialogHelper
 from .menu_bar import MenuBarMixin
 from .file_tree_view import FileTreeViewMixin
@@ -40,6 +40,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         Gtk.Window.set_default_icon_name("odsc")
         
         self.config = Config()
+        self._daemon = DaemonController()
         
         setup_logging(level=self.config.log_level, log_file=self.config.log_path)
         logger.info("=== ODSC GUI Starting ===")
@@ -408,115 +409,49 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         return False
     
     def _restart_daemon(self) -> None:
-        """Restart the ODSC daemon using systemctl."""
-        logger.info("Attempting to restart daemon via systemctl")
-        
-        try:
-            result = subprocess.run(
-                ['systemctl', '--user', 'is-active', 'odsc'],
-                capture_output=True,
-                text=True,
-                timeout=5
+        """Restart the ODSC daemon."""
+        if not self._daemon.is_running():
+            if DialogHelper.show_confirm(
+                self,
+                "Daemon Not Running",
+                "The ODSC daemon is not currently running.\n\nWould you like to start it now?",
+            ):
+                self._start_daemon()
+            return
+
+        success, msg = self._daemon.restart()
+        if success:
+            DialogHelper.show_info(
+                self,
+                "Daemon Restarted",
+                "The ODSC daemon has been restarted successfully.\nYour new settings are now active.",
             )
-            
-            daemon_was_running = (result.returncode == 0)
-            
-            if daemon_was_running:
-                result = subprocess.run(
-                    ['systemctl', '--user', 'restart', 'odsc'],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                if result.returncode == 0:
-                    logger.info("Daemon restarted successfully")
-                    DialogHelper.show_info(
-                        self,
-                        "Daemon Restarted",
-                        "The ODSC daemon has been restarted successfully.\n"
-                        "Your new settings are now active."
-                    )
-                else:
-                    logger.error(f"Failed to restart daemon: {result.stderr}")
-                    self._show_error(f"Failed to restart daemon:\n{result.stderr}")
-            else:
-                logger.info("Daemon is not currently running")
-                if DialogHelper.show_confirm(
-                    self,
-                    "Daemon Not Running",
-                    "The ODSC daemon is not currently running.\n\n"
-                    "Would you like to start it now?"
-                ):
-                    self._start_daemon()
-                    
-        except subprocess.TimeoutExpired:
-            logger.error("Timeout while trying to restart daemon")
-            self._show_error("Timeout while trying to restart daemon.\nPlease restart manually.")
-        except FileNotFoundError:
-            logger.error("systemctl command not found")
-            self._show_error(
-                "systemctl command not found.\n\n"
-                "Please restart the daemon manually:\n"
-                "  systemctl --user restart odsc"
-            )
-        except Exception as e:
-            logger.error(f"Error restarting daemon: {e}", exc_info=True)
-            self._show_error(f"Error restarting daemon:\n{e}")
-    
+        else:
+            self._show_error(f"Failed to restart daemon:\n{msg}")
+
     def _start_daemon(self) -> None:
-        """Start the ODSC daemon using systemctl."""
-        logger.info("Attempting to start daemon via systemctl")
-        
-        try:
-            result = subprocess.run(
-                ['systemctl', '--user', 'start', 'odsc'],
-                capture_output=True,
-                text=True,
-                timeout=10
+        """Start the ODSC daemon."""
+        success, msg = self._daemon.start()
+        if success:
+            DialogHelper.show_info(
+                self,
+                "Daemon Started",
+                "The ODSC daemon has been started successfully.\nYour settings are now active.",
             )
-            
-            if result.returncode == 0:
-                logger.info("Daemon started successfully")
-                DialogHelper.show_info(
-                    self,
-                    "Daemon Started",
-                    "The ODSC daemon has been started successfully.\n"
-                    "Your settings are now active."
-                )
-            else:
-                logger.error(f"Failed to start daemon: {result.stderr}")
-                self._show_error(f"Failed to start daemon:\n{result.stderr}")
-                
-        except Exception as e:
-            logger.error(f"Error starting daemon: {e}", exc_info=True)
-            self._show_error(f"Error starting daemon:\n{e}")
-    
+        else:
+            self._show_error(f"Failed to start daemon:\n{msg}")
+
     def _check_service_status(self) -> bool:
-        """Check if the ODSC systemd service is running and notify user if not.
-        
+        """Check if the ODSC service is running; show info bar if not.
+
         Returns:
-            False to stop the timer (one-time check)
+            False to cancel the GLib timer (one-shot check).
         """
-        try:
-            result = subprocess.run(
-                ['systemctl', '--user', 'is-active', 'odsc.service'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode != 0:
-                logger.info("ODSC service is not running")
-                self._show_service_not_running_bar()
-            else:
-                logger.info("ODSC service is running")
-                
-        except FileNotFoundError:
-            logger.debug("systemctl not found, skipping service check")
-        except Exception as e:
-            logger.debug(f"Error checking service status: {e}")
-        
+        if not self._daemon.is_running():
+            logger.info("ODSC service is not running")
+            self._show_service_not_running_bar()
+        else:
+            logger.info("ODSC service is running")
         return False
     
     def _show_service_not_running_bar(self) -> None:
@@ -564,36 +499,20 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
     
     def _start_daemon_from_notification(self) -> None:
         """Start the daemon from the notification bar."""
-        try:
-            result = subprocess.run(
-                ['systemctl', '--user', 'start', 'odsc.service'],
-                capture_output=True,
-                text=True,
-                timeout=10
+        success, msg = self._daemon.start()
+        if success:
+            DialogHelper.show_info(
+                self,
+                "Service Started",
+                "The OneDrive Sync service has been started successfully.",
+                "Background synchronization is now active.",
             )
-            
-            if result.returncode == 0:
-                logger.info("Service started successfully from notification")
-                DialogHelper.show_info(
-                    self,
-                    "Service Started",
-                    "The OneDrive Sync service has been started successfully.",
-                    "Background synchronization is now active."
-                )
-            else:
-                logger.error(f"Failed to start service: {result.stderr}")
-                DialogHelper.show_error(
-                    self,
-                    "Failed to Start Service",
-                    f"Could not start the OneDrive Sync service:\n\n{result.stderr}\n\n"
-                    "You can start it manually with:\n  systemctl --user start odsc.service"
-                )
-        except Exception as e:
-            logger.error(f"Error starting service: {e}", exc_info=True)
+        else:
             DialogHelper.show_error(
                 self,
-                "Error Starting Service",
-                f"An error occurred while starting the service:\n\n{str(e)}"
+                "Failed to Start Service",
+                f"Could not start the OneDrive Sync service:\n\n{msg}\n\n"
+                "You can start it manually with:\n  systemctl --user start odsc.service",
             )
     
     def _hide_service_info_bar(self) -> None:
