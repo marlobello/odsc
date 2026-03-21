@@ -363,6 +363,35 @@ class SettingsDialog(Gtk.Dialog):
         interval_row.pack_end(self.interval_spin, False, False, 0)
         sync_group.add(interval_row)
         
+        # Add parallel workers row
+        workers_row = self._create_action_row(
+            "Parallel Transfer Workers",
+            "Number of files uploaded/downloaded simultaneously"
+        )
+        workers_adj = Gtk.Adjustment(
+            value=config.max_sync_workers, lower=1, upper=16, step_increment=1
+        )
+        self.workers_spin = Gtk.SpinButton(adjustment=workers_adj)
+        self.workers_spin.set_valign(Gtk.Align.CENTER)
+        self.workers_spin.connect("value-changed", self._on_workers_changed)
+        workers_row.pack_end(self.workers_spin, False, False, 0)
+        sync_group.add(workers_row)
+        
+        # Add download chunk size row (displayed in KB, stored as bytes)
+        chunk_row = self._create_action_row(
+            "Download Chunk Size (KB)",
+            "Bytes per read when streaming downloads; larger = faster on fast connections"
+        )
+        chunk_kb = config.download_chunk_size // 1024
+        chunk_adj = Gtk.Adjustment(
+            value=chunk_kb, lower=4, upper=16384, step_increment=4
+        )
+        self.chunk_spin = Gtk.SpinButton(adjustment=chunk_adj)
+        self.chunk_spin.set_valign(Gtk.Align.CENTER)
+        self.chunk_spin.connect("value-changed", self._on_chunk_size_changed)
+        chunk_row.pack_end(self.chunk_spin, False, False, 0)
+        sync_group.add(chunk_row)
+        
         # Application Settings Group
         app_group = self._create_preferences_group(
             "Application",
@@ -549,6 +578,53 @@ class SettingsDialog(Gtk.Dialog):
             DialogHelper.show_error(self.parent_window, f"Invalid sync interval: {e}")
             # Revert to old value
             self.interval_spin.set_value(self.config.sync_interval)
+    
+    def _on_workers_changed(self, widget) -> None:
+        """Handle parallel transfer workers change."""
+        if self._initializing:
+            return
+
+        value = int(widget.get_value())
+
+        try:
+            self.config.set('max_sync_workers', value)
+            logger.info(f"Parallel transfer workers changed to {value}")
+
+            if DialogHelper.show_restart_prompt(
+                self.parent_window,
+                "Workers Setting Changed",
+                f"Parallel transfer workers changed to {value}.\n\n"
+                "The daemon needs to be restarted for this change to take effect."
+            ):
+                self.parent_window._restart_daemon()
+
+        except ValueError as e:
+            DialogHelper.show_error(self.parent_window, f"Invalid workers value: {e}")
+            self.workers_spin.set_value(self.config.max_sync_workers)
+
+    def _on_chunk_size_changed(self, widget) -> None:
+        """Handle download chunk size change (widget value is in KB)."""
+        if self._initializing:
+            return
+
+        kb_value = int(widget.get_value())
+        byte_value = kb_value * 1024
+
+        try:
+            self.config.set('download_chunk_size', byte_value)
+            logger.info(f"Download chunk size changed to {byte_value} bytes ({kb_value} KB)")
+
+            if DialogHelper.show_restart_prompt(
+                self.parent_window,
+                "Chunk Size Changed",
+                f"Download chunk size changed to {kb_value} KB.\n\n"
+                "The daemon needs to be restarted for this change to take effect."
+            ):
+                self.parent_window._restart_daemon()
+
+        except ValueError as e:
+            DialogHelper.show_error(self.parent_window, f"Invalid chunk size: {e}")
+            self.chunk_spin.set_value(self.config.download_chunk_size // 1024)
     
     def _on_log_level_changed(self, widget) -> None:
         """Handle log level change."""
