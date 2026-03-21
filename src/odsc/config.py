@@ -100,6 +100,8 @@ class Config:
                 'auto_start': False,
                 'log_level': 'INFO',
                 'show_splash': True,  # Show splash screen on startup (default: enabled)
+                'max_sync_workers': 4,   # parallel file transfers
+                'download_chunk_size': 65536,  # 64 KB per read() call when streaming
             }
             self.save()
             logger.debug(f"Created default config at {self.config_path}")
@@ -203,6 +205,16 @@ class Config:
     def show_splash(self) -> bool:
         """Get whether to show splash screen on startup."""
         return self._config.get('show_splash', True)
+
+    @property
+    def max_sync_workers(self) -> int:
+        """Number of parallel file-transfer workers used during sync."""
+        return self._config.get('max_sync_workers', 4)
+
+    @property
+    def download_chunk_size(self) -> int:
+        """Chunk size in bytes used when streaming file downloads."""
+        return self._config.get('download_chunk_size', 65536)
     
     def _get_encryption_key(self) -> bytes:
         """Get or create encryption key from system keyring.

@@ -408,12 +408,14 @@ class OneDriveClient:
         retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
         reraise=True
     )
-    def download_file(self, file_id: str, local_path: Path) -> Dict[str, Any]:
+    def download_file(self, file_id: str, local_path: Path, chunk_size: int = 65536) -> Dict[str, Any]:
         """Download file from OneDrive with retry logic.
         
         Args:
             file_id: OneDrive file ID
             local_path: Local destination path
+            chunk_size: Bytes per read when streaming the response body.
+                Larger values reduce per-chunk overhead; defaults to 64 KB.
             
         Returns:
             File metadata including eTag
@@ -436,7 +438,7 @@ class OneDriveClient:
             # Use os.open with O_CREAT|O_EXCL to prevent TOCTOU symlink attacks
             fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             with os.fdopen(fd, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
+                for chunk in response.iter_content(chunk_size=chunk_size):
                     f.write(chunk)
             
             # Move to final location only if download succeeded

@@ -6,6 +6,7 @@ import os
 import time
 import signal
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, Set, Optional
 from datetime import datetime
@@ -100,6 +101,7 @@ class SyncDaemon:
         self.system_tray: Optional['SystemTrayIndicator'] = None
         self._tray_thread: Optional[threading.Thread] = None
         self._wakeup_event = threading.Event()
+        self._state_lock = threading.Lock()
         
         # Load sync state
         self.state = self.config.load_state()
@@ -593,7 +595,6 @@ class SyncDaemon:
     
     def _sync_files(self, sync_dir: Path, local_files: Dict, remote_files: Dict, all_remote_files: Dict) -> None:
         """Sync files between local and remote (optimized)."""
-        import time
         start_time = time.time()
         
         # OPTIMIZATION: Only process files that actually need syncing
@@ -602,38 +603,50 @@ class SyncDaemon:
         # 2. Check only files changed remotely in this delta (small set)
         # 3. Skip everything else (already in sync)
         
+        # Determine all actions sequentially (reads self.state, no I/O).
+        pending_actions = []
         processed = set()
-        sync_count = {'upload': 0, 'download': 0, 'skip': 0, 'conflict': 0, 'recycle': 0}
         
-        # Process local files (check if they need upload)
         for rel_path, local_info in local_files.items():
             remote_info = remote_files.get(rel_path) or all_remote_files.get(rel_path)
             state_entry = self.state['files'].get(rel_path, {})
-            
             try:
                 action = self._determine_sync_action(rel_path, local_info, remote_info, state_entry)
-                self._execute_sync_action(action, rel_path, sync_dir, local_info, remote_info)
-                sync_count[action] = sync_count.get(action, 0) + 1
+                pending_actions.append((action, rel_path, local_info, remote_info))
                 processed.add(rel_path)
             except Exception as e:
-                logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
+                logger.error(f"Failed to determine sync action for {rel_path}: {e}", exc_info=True)
         
-        # Process files changed remotely (check if they need download)
-        # remote_files contains ONLY files that changed in this delta query
         for rel_path, remote_info in remote_files.items():
             if rel_path in processed:
-                continue  # Already processed above
-            
+                continue
             local_info = local_files.get(rel_path)
             state_entry = self.state['files'].get(rel_path, {})
-            
             try:
                 action = self._determine_sync_action(rel_path, local_info, remote_info, state_entry)
-                self._execute_sync_action(action, rel_path, sync_dir, local_info, remote_info)
-                sync_count[action] = sync_count.get(action, 0) + 1
+                pending_actions.append((action, rel_path, local_info, remote_info))
                 processed.add(rel_path)
             except Exception as e:
-                logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
+                logger.error(f"Failed to determine sync action for {rel_path}: {e}", exc_info=True)
+        
+        # Execute actions in parallel using a thread pool.
+        sync_count: Dict[str, int] = {'upload': 0, 'download': 0, 'skip': 0, 'conflict': 0, 'recycle': 0}
+        max_workers = self.config.max_sync_workers
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_action = {
+                executor.submit(
+                    self._execute_sync_action, action, rel_path, sync_dir, local_info, remote_info
+                ): (action, rel_path)
+                for action, rel_path, local_info, remote_info in pending_actions
+            }
+            for future in as_completed(future_to_action):
+                action, rel_path = future_to_action[future]
+                try:
+                    future.result()
+                    sync_count[action] = sync_count.get(action, 0) + 1
+                except Exception as e:
+                    logger.error(f"Failed to sync {rel_path}: {e}", exc_info=True)
         
         elapsed = time.time() - start_time
         logger.info(f"File sync completed in {elapsed:.2f}s: "
@@ -711,7 +724,8 @@ class SyncDaemon:
             state_entry['remote_modified'] = metadata.get('lastModifiedDateTime', '') if metadata else ''
             state_entry['upload_error'] = None
         
-        self.state['files'][rel_path] = state_entry
+        with self._state_lock:
+            self.state['files'][rel_path] = state_entry
     
     def _remove_from_cache(self, path: str) -> None:
         """Remove item from cache and file state.
@@ -719,11 +733,12 @@ class SyncDaemon:
         Args:
             path: Relative path to remove
         """
-        if path in self.state.get('files', {}):
-            del self.state['files'][path]
-        if path in self.state.get('file_cache', {}):
-            del self.state['file_cache'][path]
-            logger.debug(f"Removed {path} from cache")
+        with self._state_lock:
+            if path in self.state.get('files', {}):
+                del self.state['files'][path]
+            if path in self.state.get('file_cache', {}):
+                del self.state['file_cache'][path]
+                logger.debug(f"Removed {path} from cache")
     
     def _upload_file(self, rel_path: str, local_info: Dict) -> None:
         """Upload a local file to OneDrive."""
@@ -740,7 +755,10 @@ class SyncDaemon:
         logger.info(f"Downloading updated version: {rel_path}")
         try:
             local_path = validate_sync_path(rel_path, sync_dir)
-            metadata = self.client.download_file(remote_info['id'], local_path)
+            metadata = self.client.download_file(
+                remote_info['id'], local_path,
+                chunk_size=self.config.download_chunk_size,
+            )
             self._update_file_state(rel_path, local_path.stat().st_mtime, remote_info['size'], remote_info)
         except Exception as download_err:
             logger.error(f"Download failed for {rel_path}: {download_err}")
@@ -757,7 +775,10 @@ class SyncDaemon:
         logger.warning(f"CONFLICT detected for {rel_path} - keeping both versions")
         conflict_rel = f"{rel_path}.conflict"
         conflict_path = validate_sync_path(conflict_rel, sync_dir)
-        metadata = self.client.download_file(remote_info['id'], conflict_path)
+        metadata = self.client.download_file(
+            remote_info['id'], conflict_path,
+            chunk_size=self.config.download_chunk_size,
+        )
         logger.info(f"Saved remote version as: {conflict_path}")
     
     def _sync_folders(self, sync_dir: Path, local_folders: Dict, all_remote_folders: Dict) -> None:

@@ -231,6 +231,60 @@ class StringValidator(ConfigValidator):
         return value
 
 
+class MaxSyncWorkersValidator(ConfigValidator):
+    """Validates the number of parallel file transfer workers."""
+
+    MIN_WORKERS = 1
+    MAX_WORKERS = 16
+
+    def validate(self, value: Any) -> int:
+        try:
+            workers = int(value)
+        except (ValueError, TypeError):
+            raise ValidationError(f"max_sync_workers must be an integer, got: {value}")
+
+        if workers < self.MIN_WORKERS:
+            raise ValidationError(
+                f"max_sync_workers must be at least {self.MIN_WORKERS}"
+            )
+
+        if workers > self.MAX_WORKERS:
+            raise ValidationError(
+                f"max_sync_workers must be at most {self.MAX_WORKERS}"
+            )
+
+        return workers
+
+
+class DownloadChunkSizeValidator(ConfigValidator):
+    """Validates the chunk size used when streaming downloads (bytes).
+
+    Larger values reduce Python overhead per chunk and generally improve
+    throughput on fast connections.  Smaller values reduce memory use.
+    """
+
+    MIN_BYTES = 4096       # 4 KB
+    MAX_BYTES = 16_777_216  # 16 MB
+
+    def validate(self, value: Any) -> int:
+        try:
+            size = int(value)
+        except (ValueError, TypeError):
+            raise ValidationError(f"download_chunk_size must be an integer, got: {value}")
+
+        if size < self.MIN_BYTES:
+            raise ValidationError(
+                f"download_chunk_size must be at least {self.MIN_BYTES} bytes (4 KB)"
+            )
+
+        if size > self.MAX_BYTES:
+            raise ValidationError(
+                f"download_chunk_size must be at most {self.MAX_BYTES} bytes (16 MB)"
+            )
+
+        return size
+
+
 # Registry of validators for known config keys
 VALIDATORS = {
     'sync_interval': SyncIntervalValidator(),
@@ -238,6 +292,8 @@ VALIDATORS = {
     'log_level': LogLevelValidator(),
     'client_id': ClientIdValidator(),
     'auto_start': BooleanValidator(),
+    'max_sync_workers': MaxSyncWorkersValidator(),
+    'download_chunk_size': DownloadChunkSizeValidator(),
 }
 
 
