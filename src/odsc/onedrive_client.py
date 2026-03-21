@@ -216,6 +216,22 @@ class OneDriveClient:
         
         url = f"{self.API_BASE}{endpoint}"
         response = self._session.request(method, url, headers=headers, **kwargs)
+        
+        # Log auth errors differently from transient server errors so operators
+        # can tell at a glance whether they need to re-authenticate.
+        if not response.ok:
+            if response.status_code in (401, 403):
+                logger.error(
+                    f"Authentication/authorisation error {response.status_code} "
+                    f"for {method} {endpoint} — token may be expired or revoked. "
+                    f"Re-authenticate with `odsc auth`."
+                )
+            elif response.status_code >= 500:
+                logger.warning(
+                    f"Transient server error {response.status_code} "
+                    f"for {method} {endpoint} — will retry if decorated with @retry."
+                )
+        
         response.raise_for_status()
         return response
     
@@ -364,16 +380,26 @@ class OneDriveClient:
     
     def list_all_files(self, path: str = "/") -> List[Dict[str, Any]]:
         """Recursively list all files and folders in OneDrive.
-        
+
+        .. deprecated::
+            Use :meth:`get_delta` instead.  ``list_all_files`` fetches the
+            entire tree on every call (O(n) API requests) and does not support
+            incremental syncs.  It is retained only for scripts that have not
+            yet been migrated and **will be removed in a future release**.
+
         Args:
             path: Starting directory path
-            
+
         Returns:
             List of all file and folder metadata
-            
-        Note:
-            For large accounts, consider using get_delta() instead for better performance.
         """
+        import warnings
+        warnings.warn(
+            "list_all_files() is deprecated and will be removed in a future release. "
+            "Use get_delta() for efficient incremental syncs.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         all_items = []
         items = self.list_files(path)
         
