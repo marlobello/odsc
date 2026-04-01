@@ -184,7 +184,7 @@ echo "✓ Application icon installed"
 
 # ── Systemd service ────────────────────────────────────────────────────────────
 echo ""
-read -p "Install systemd service for background sync? [Y/n] " -n 1 -r
+read -p "Install systemd service for background sync? [Y/n] " -n 1 -r </dev/tty
 echo
 if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
     mkdir -p "$HOME/.config/systemd/user"
@@ -193,14 +193,14 @@ if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "✓ Systemd service installed"
 
     echo ""
-    read -p "Enable service to start automatically on login? [Y/n] " -n 1 -r
+    read -p "Enable service to start automatically on login? [Y/n] " -n 1 -r </dev/tty
     echo
     if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
         systemctl --user enable odsc
         echo "✓ Service enabled for auto-start"
     fi
 
-    read -p "Start service now? [Y/n] " -n 1 -r
+    read -p "Start service now? [Y/n] " -n 1 -r </dev/tty
     echo
     if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
         systemctl --user start odsc
@@ -212,7 +212,7 @@ fi
 
 # ── Desktop entry ──────────────────────────────────────────────────────────────
 echo ""
-read -p "Install desktop application entry for GUI? [Y/n] " -n 1 -r
+read -p "Install desktop application entry for GUI? [Y/n] " -n 1 -r </dev/tty
 echo
 if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
     mkdir -p "$HOME/.local/share/applications"
