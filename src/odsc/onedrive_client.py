@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 import certifi
-from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type, before_sleep_log
 
 from .path_utils import SecurityError
 
@@ -315,6 +315,7 @@ class OneDriveClient:
         headers = kwargs.pop('headers', {})
         headers['Authorization'] = f"Bearer {self.token_data['access_token']}"
         
+        kwargs.setdefault('timeout', (10, 300))
         response = self._session.request('GET', url, headers=headers, **kwargs)
         response.raise_for_status()
         return response
@@ -437,6 +438,7 @@ class OneDriveClient:
         stop=stop_after_attempt(3),
         wait=wait_random_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True
     )
     def download_file(self, file_id: str, local_path: Path, chunk_size: int = 65536) -> Dict[str, Any]:
@@ -466,11 +468,12 @@ class OneDriveClient:
         # Download with temporary file first for atomicity
         temp_path = local_path.with_suffix(local_path.suffix + '.tmp')
         try:
-            # Use os.open with O_CREAT|O_EXCL to prevent TOCTOU symlink attacks
-            fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            with os.fdopen(fd, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    f.write(chunk)
+            with response:
+                # Use os.open with O_CREAT|O_EXCL to prevent TOCTOU symlink attacks
+                fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(fd, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        f.write(chunk)
             
             # Move to final location only if download succeeded
             temp_path.replace(local_path)
@@ -488,6 +491,7 @@ class OneDriveClient:
         stop=stop_after_attempt(3),
         wait=wait_random_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True
     )
     def upload_file(self, local_path: Path, remote_path: str) -> Dict[str, Any]:

@@ -82,17 +82,17 @@ class FileTreeViewMixin:
             return False
         
         model = widget.get_model()
-        iter = model.get_iter(path)
+        tree_iter = model.get_iter(path)
         
-        is_local = model.get_value(iter, 4)
-        is_folder = model.get_value(iter, 6)
-        file_name = model.get_value(iter, 1)
-        error_msg = model.get_value(iter, 8)
+        is_local = model.get_value(tree_iter, 4)
+        is_folder = model.get_value(tree_iter, 6)
+        file_name = model.get_value(tree_iter, 1)
+        error_msg = model.get_value(tree_iter, 8)
         
         tooltip_text = None
         
         if is_folder:
-            folder_status = self._get_folder_sync_status_cached(model, iter)
+            folder_status = self._get_folder_sync_status_cached(model, tree_iter)
             if folder_status == 'all':
                 tooltip_text = 'All files synced - All files in this folder are available locally'
             elif folder_status == 'partial':
@@ -206,13 +206,13 @@ class FileTreeViewMixin:
         has_local_copy = 0
         
         for path in paths:
-            iter = model.get_iter(path)
-            is_local = model.get_value(iter, 4)
-            is_folder = model.get_value(iter, 6)
-            file_id = model.get_value(iter, 5)
+            tree_iter = model.get_iter(path)
+            is_local = model.get_value(tree_iter, 4)
+            is_folder = model.get_value(tree_iter, 6)
+            file_id = model.get_value(tree_iter, 5)
             
             if is_folder:
-                folder_local, folder_remote = self._count_folder_files(model, iter)
+                folder_local, folder_remote = self._count_folder_files(model, tree_iter)
                 has_local_copy += folder_local
                 has_remote_only += folder_remote
             else:

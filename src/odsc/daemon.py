@@ -507,7 +507,7 @@ class SyncDaemon:
             
             # Validate path is within sync directory (protect against symlink attacks)
             try:
-                validate_sync_path(sync_dir, local_path)
+                validate_sync_path(path, sync_dir)
             except SecurityError as e:
                 logger.error(f"Path validation failed for deletion: {path} - {e}")
                 continue
@@ -528,7 +528,7 @@ class SyncDaemon:
                 try:
                     if local_path.is_dir():
                         # Re-validate before rmtree to prevent symlink attacks
-                        validate_sync_path(sync_dir, local_path)
+                        validate_sync_path(path, sync_dir)
                         # For directories, use rmtree directly (skip send2trash)
                         shutil.rmtree(local_path, ignore_errors=False)
                         logger.info(f"Directory deleted on retry {attempt + 1}: {path}")
@@ -556,7 +556,7 @@ class SyncDaemon:
                         time.sleep(0.5)
                     else:
                         count = self.state_mgr.increment_deletion_failure(path)
-                        log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.error
+                        log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.debug
                         log_level(
                             f"Permission denied after 3 attempts: {path} "
                             f"(total failures: {count})"
@@ -567,7 +567,7 @@ class SyncDaemon:
                         time.sleep(0.5)
                     else:
                         count = self.state_mgr.increment_deletion_failure(path)
-                        log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.error
+                        log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.debug
                         log_level(
                             f"Could not delete after 3 attempts: {path} - {e} "
                             f"(total failures: {count})"

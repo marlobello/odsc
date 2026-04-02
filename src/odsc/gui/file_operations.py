@@ -44,15 +44,15 @@ class FileOperationsMixin:
         files_to_download = []
         
         for path in paths:
-            iter = model.get_iter(path)
-            is_folder = model.get_value(iter, 6)
+            tree_iter = model.get_iter(path)
+            is_folder = model.get_value(tree_iter, 6)
             
             if is_folder:
-                files_to_download.extend(self._get_all_files_in_folder(model, iter))
+                files_to_download.extend(self._get_all_files_in_folder(model, tree_iter))
             else:
-                file_id = model.get_value(iter, 5)
-                is_local = model.get_value(iter, 4)
-                file_name = model.get_value(iter, 1)
+                file_id = model.get_value(tree_iter, 5)
+                is_local = model.get_value(tree_iter, 4)
+                file_name = model.get_value(tree_iter, 1)
                 
                 if not is_local and file_id:
                     files_to_download.append((file_id, file_name))
@@ -79,15 +79,15 @@ class FileOperationsMixin:
         files_to_remove = []
         
         for path in paths:
-            iter = model.get_iter(path)
-            is_folder = model.get_value(iter, 6)
+            tree_iter = model.get_iter(path)
+            is_folder = model.get_value(tree_iter, 6)
             
             if is_folder:
-                files_to_remove.extend(self._get_all_files_in_folder_for_removal(model, iter))
+                files_to_remove.extend(self._get_all_files_in_folder_for_removal(model, tree_iter))
             else:
-                file_path_str = model.get_value(iter, 7)
-                is_local = model.get_value(iter, 4)
-                file_name = model.get_value(iter, 1)
+                file_path_str = model.get_value(tree_iter, 7)
+                is_local = model.get_value(tree_iter, 4)
+                file_name = model.get_value(tree_iter, 1)
                 
                 if is_local:
                     files_to_remove.append((file_path_str, file_name))
@@ -265,7 +265,7 @@ class FileOperationsMixin:
         thread = threading.Thread(target=remove_batch, daemon=True)
         thread.start()
 
-
+    def _download_file(self, file_id: str, file_name: str) -> None:
         """Download file from OneDrive.
         
         Args:
