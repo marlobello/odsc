@@ -14,6 +14,7 @@ class DummyConfig:
     """Small config stub for daemon tests."""
 
     def __init__(self, tmp_path: Path, sync_interval: int = 0):
+        self.config_dir = tmp_path
         self.sync_directory = tmp_path / "sync"
         self.force_sync_path = tmp_path / ".force_sync"
         self.token_path = tmp_path / ".token"
@@ -41,7 +42,7 @@ class DummyConfig:
 class ImmediateThread:
     """Thread stub that runs the target immediately."""
 
-    def __init__(self, target, daemon=False):
+    def __init__(self, target, daemon=False, **kwargs):
         self._target = target
         self.daemon = daemon
         self.joined = False
@@ -68,6 +69,7 @@ def test_start_runs_headless_and_stops_cleanly(monkeypatch, config):
     """The daemon should monitor the sync dir and clean up in headless mode."""
     observer = Mock()
     monkeypatch.setattr(daemon_module, "Observer", lambda: observer)
+    monkeypatch.setattr(daemon_module, "CommandServer", lambda *a, **kw: Mock())
     monkeypatch.setattr(daemon_module.threading, "Thread", ImmediateThread)
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
@@ -92,6 +94,7 @@ def test_start_falls_back_to_headless_when_tray_setup_fails(monkeypatch, config)
     """A tray initialization failure should not prevent the daemon from starting."""
     observer = Mock()
     monkeypatch.setattr(daemon_module, "Observer", lambda: observer)
+    monkeypatch.setattr(daemon_module, "CommandServer", lambda *a, **kw: Mock())
     monkeypatch.setattr(daemon_module.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(daemon_module, "SYSTEM_TRAY_AVAILABLE", True)
     monkeypatch.setattr(

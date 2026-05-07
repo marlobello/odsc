@@ -10,6 +10,7 @@ import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 
+from ..command_socket import send_command
 from ..onedrive_client import OneDriveClient
 from .dialogs import DialogHelper, AuthInfoDialog, SettingsDialog
 from .auth_handler import AuthCallbackHandler
@@ -208,21 +209,33 @@ class MenuBarMixin:
     def _on_force_sync_clicked(self, widget) -> None:
         """Handle force sync menu item click."""
         try:
-            self.config.force_sync_path.touch()
-            logger.info("Force sync signal created")
-            
-            DialogHelper.show_info(
-                self, 
-                "Sync Requested", 
-                "The daemon has been signaled to perform a sync operation.",
-                "The sync will begin within a few seconds if the daemon is running."
-            )
-        except Exception as e:
-            logger.error(f"Failed to create force sync signal: {e}")
+            response = send_command(self.config.config_dir, "SYNC")
+            if response.startswith("OK"):
+                DialogHelper.show_info(
+                    self,
+                    "Sync Requested",
+                    "The daemon has been signaled to perform a sync operation.",
+                    "The sync will begin momentarily."
+                )
+            else:
+                DialogHelper.show_error(
+                    self,
+                    "Force Sync Failed",
+                    f"Daemon responded: {response}"
+                )
+        except ConnectionError as e:
+            logger.warning(f"Force sync signal failed: {e}")
             DialogHelper.show_error(
                 self,
                 "Force Sync Failed",
-                f"Could not signal the daemon: {e}"
+                "Could not connect to the daemon. Is it running?"
+            )
+        except Exception as e:
+            logger.error(f"Failed to send force sync command: {e}")
+            DialogHelper.show_error(
+                self,
+                "Force Sync Failed",
+                "An unexpected error occurred while signaling the daemon."
             )
     
     def _on_about_clicked(self, widget) -> None:

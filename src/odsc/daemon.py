@@ -24,6 +24,7 @@ from .error_handling import log_exception
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
 from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
+from .command_socket import CommandServer
 from .sync_state import SyncStateManager
 
 GITHUB_RELEASES_API = "https://api.github.com/repos/marlobello/odsc/releases/latest"
@@ -136,6 +137,7 @@ class SyncDaemon:
         self.system_tray: Optional['SystemTrayIndicator'] = None
         self._wakeup_event = threading.Event()
         self._last_update_check: float = 0.0
+        self._command_server: Optional[CommandServer] = None
 
         self.state_mgr = SyncStateManager(self.config.load_state, self.config.save_state)
         self.state_mgr.load()
@@ -218,6 +220,12 @@ class SyncDaemon:
                 self.system_tray = None
                 self._gtk_mode = False
         
+        # Start command socket for IPC (force-sync, etc.)
+        self._command_server = CommandServer(
+            self.config.config_dir, self._on_force_sync_requested
+        )
+        self._command_server.start()
+
         # Set up file system monitoring
         self.event_handler = SyncEventHandler(self)
         self.observer = Observer()
@@ -268,6 +276,13 @@ class SyncDaemon:
             except Exception as e:
                 logger.debug(f"Error stopping system tray: {e}")
         
+        # Stop command socket
+        if self._command_server:
+            try:
+                self._command_server.stop()
+            except Exception as e:
+                logger.debug(f"Error stopping command socket: {e}")
+
         if self.observer:
             self.observer.stop()
             self.observer.join(timeout=5)
@@ -354,8 +369,12 @@ class SyncDaemon:
         
         return elapsed >= self.config.sync_interval
     
+    def _on_force_sync_requested(self) -> None:
+        """Callback from command socket when SYNC command received."""
+        self._wakeup_event.set()
+
     def _check_force_sync_signal(self) -> bool:
-        """Check if force sync signal file exists.
+        """Check if force sync signal file exists (legacy fallback).
         
         Returns:
             True if force sync requested
