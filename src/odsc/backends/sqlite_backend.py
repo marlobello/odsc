@@ -3,6 +3,7 @@
 import json
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -41,6 +42,7 @@ class SqliteStateBackend(StateBackend):
         """
         self.db_path = db_path
         self.conn: Optional[sqlite3.Connection] = None
+        self._write_lock = threading.Lock()
         self._ensure_connection()
         self._init_schema()
     
@@ -58,6 +60,7 @@ class SqliteStateBackend(StateBackend):
         
         # Performance optimizations
         self.conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for concurrent reads
+        self.conn.execute("PRAGMA busy_timeout=5000")  # Wait briefly for cross-process writers
         self.conn.execute("PRAGMA synchronous=NORMAL")  # Balance safety/performance
         self.conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
         self.conn.execute("PRAGMA temp_store=MEMORY")  # Use memory for temp tables
@@ -78,68 +81,69 @@ class SqliteStateBackend(StateBackend):
         
         logger.info("Initializing SQLite schema...")
         
-        with self.conn:
-            # Create file_cache table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS file_cache (
-                    path TEXT PRIMARY KEY,
-                    id TEXT NOT NULL,
-                    size INTEGER,
-                    mtime_remote REAL,
-                    etag TEXT,
-                    is_folder INTEGER DEFAULT 0,
-                    parent_id TEXT,
-                    created_at TEXT,
-                    modified_at TEXT
-                )
-            """)
-            
-            # Create indexes for fast lookups
-            self.conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_file_cache_id 
-                ON file_cache(id)
-            """)
-            self.conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_file_cache_parent 
-                ON file_cache(parent_id)
-            """)
-            self.conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_file_cache_is_folder 
-                ON file_cache(is_folder)
-            """)
-            
-            # Create sync_state table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS sync_state (
-                    path TEXT PRIMARY KEY,
-                    mtime REAL NOT NULL,
-                    size INTEGER NOT NULL,
-                    downloaded INTEGER DEFAULT 0,
-                    etag TEXT,
-                    remote_modified TEXT,
-                    upload_error TEXT
-                )
-            """)
-            
-            # Create index for modified files
-            self.conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_sync_state_mtime 
-                ON sync_state(mtime)
-            """)
-            
-            # Create metadata table
-            self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-            """)
-            
-            # Store schema version
-            self.conn.execute("""
-                INSERT OR REPLACE INTO metadata (key, value) 
-                VALUES ('schema_version', ?)
-            """, (str(self.SCHEMA_VERSION),))
+        with self._write_lock:
+            with self.conn:
+                # Create file_cache table
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS file_cache (
+                        path TEXT PRIMARY KEY,
+                        id TEXT NOT NULL,
+                        size INTEGER,
+                        mtime_remote REAL,
+                        etag TEXT,
+                        is_folder INTEGER DEFAULT 0,
+                        parent_id TEXT,
+                        created_at TEXT,
+                        modified_at TEXT
+                    )
+                """)
+                
+                # Create indexes for fast lookups
+                self.conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_file_cache_id 
+                    ON file_cache(id)
+                """)
+                self.conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_file_cache_parent 
+                    ON file_cache(parent_id)
+                """)
+                self.conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_file_cache_is_folder 
+                    ON file_cache(is_folder)
+                """)
+                
+                # Create sync_state table
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sync_state (
+                        path TEXT PRIMARY KEY,
+                        mtime REAL NOT NULL,
+                        size INTEGER NOT NULL,
+                        downloaded INTEGER DEFAULT 0,
+                        etag TEXT,
+                        remote_modified TEXT,
+                        upload_error TEXT
+                    )
+                """)
+                
+                # Create index for modified files
+                self.conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_sync_state_mtime 
+                    ON sync_state(mtime)
+                """)
+                
+                # Create metadata table
+                self.conn.execute("""
+                    CREATE TABLE IF NOT EXISTS metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                """)
+                
+                # Store schema version
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO metadata (key, value) 
+                    VALUES ('schema_version', ?)
+                """, (str(self.SCHEMA_VERSION),))
         
         logger.info("SQLite schema initialized")
     
@@ -162,24 +166,31 @@ class SqliteStateBackend(StateBackend):
         Note: This is slow for large states. Use specific methods
         (set_file_cache, set_sync_state) for better performance.
         """
-        with self.conn:
-            # Clear existing data
-            self.conn.execute("DELETE FROM file_cache")
-            self.conn.execute("DELETE FROM sync_state")
-            
-            # Insert file_cache
-            file_cache = state.get('file_cache', {})
-            if file_cache:
-                self._batch_insert_cache(file_cache)
-            
-            # Insert sync_state
-            sync_state = state.get('files', {})
-            if sync_state:
-                self._batch_insert_sync_state(sync_state)
-            
-            # Insert metadata
-            self.set_metadata('delta_token', state.get('delta_token', ''))
-            self.set_metadata('last_sync', state.get('last_sync', ''))
+        with self._write_lock:
+            with self.conn:
+                # Clear existing data
+                self.conn.execute("DELETE FROM file_cache")
+                self.conn.execute("DELETE FROM sync_state")
+                
+                # Insert file_cache
+                file_cache = state.get('file_cache', {})
+                if file_cache:
+                    self._batch_insert_cache_unlocked(file_cache)
+                
+                # Insert sync_state
+                sync_state = state.get('files', {})
+                if sync_state:
+                    self._batch_insert_sync_state_unlocked(sync_state)
+                
+                # Insert metadata
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO metadata (key, value) 
+                    VALUES (?, ?)
+                """, ('delta_token', state.get('delta_token', '')))
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO metadata (key, value) 
+                    VALUES (?, ?)
+                """, ('last_sync', state.get('last_sync', '')))
     
     def get_file_cache(self, path: str) -> Optional[Dict]:
         """Get single file's cache entry."""
@@ -194,27 +205,29 @@ class SqliteStateBackend(StateBackend):
     
     def set_file_cache(self, path: str, data: Dict) -> None:
         """Update or insert file cache entry."""
-        with self.conn:
-            self.conn.execute("""
-                INSERT OR REPLACE INTO file_cache 
-                (path, id, size, mtime_remote, etag, is_folder, parent_id, created_at, modified_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                path,
-                data.get('id', ''),
-                data.get('size'),
-                data.get('mtime_remote'),
-                data.get('eTag') or data.get('etag'),
-                1 if (data.get('folder') or data.get('is_folder')) else 0,
-                data.get('parent_id') or data.get('parentReference', {}).get('id'),
-                data.get('createdDateTime') or data.get('created_at'),
-                data.get('lastModifiedDateTime') or data.get('modified_at')
-            ))
+        with self._write_lock:
+            with self.conn:
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO file_cache 
+                    (path, id, size, mtime_remote, etag, is_folder, parent_id, created_at, modified_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    path,
+                    data.get('id', ''),
+                    data.get('size'),
+                    data.get('mtime_remote'),
+                    data.get('eTag') or data.get('etag'),
+                    1 if (data.get('folder') or data.get('is_folder')) else 0,
+                    data.get('parent_id') or data.get('parentReference', {}).get('id'),
+                    data.get('createdDateTime') or data.get('created_at'),
+                    data.get('lastModifiedDateTime') or data.get('modified_at')
+                ))
     
     def delete_file_cache(self, path: str) -> None:
         """Remove file from cache."""
-        with self.conn:
-            self.conn.execute("DELETE FROM file_cache WHERE path = ?", (path,))
+        with self._write_lock:
+            with self.conn:
+                self.conn.execute("DELETE FROM file_cache WHERE path = ?", (path,))
     
     def get_all_file_cache(self) -> Dict[str, Dict]:
         """Get all cached files."""
@@ -234,20 +247,21 @@ class SqliteStateBackend(StateBackend):
     
     def set_sync_state(self, path: str, data: Dict) -> None:
         """Update or insert sync state."""
-        with self.conn:
-            self.conn.execute("""
-                INSERT OR REPLACE INTO sync_state 
-                (path, mtime, size, downloaded, etag, remote_modified, upload_error)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                path,
-                data.get('mtime', 0),
-                data.get('size', 0),
-                1 if data.get('downloaded') else 0,
-                data.get('eTag') or data.get('etag'),
-                data.get('remote_modified'),
-                data.get('upload_error')
-            ))
+        with self._write_lock:
+            with self.conn:
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO sync_state 
+                    (path, mtime, size, downloaded, etag, remote_modified, upload_error)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    path,
+                    data.get('mtime', 0),
+                    data.get('size', 0),
+                    1 if data.get('downloaded') else 0,
+                    data.get('eTag') or data.get('etag'),
+                    data.get('remote_modified'),
+                    data.get('upload_error')
+                ))
     
     def get_all_sync_state(self) -> Dict[str, Dict]:
         """Get all sync state entries."""
@@ -263,11 +277,12 @@ class SqliteStateBackend(StateBackend):
     
     def set_metadata(self, key: str, value: str) -> None:
         """Set metadata value."""
-        with self.conn:
-            self.conn.execute("""
-                INSERT OR REPLACE INTO metadata (key, value) 
-                VALUES (?, ?)
-            """, (key, value))
+        with self._write_lock:
+            with self.conn:
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO metadata (key, value) 
+                    VALUES (?, ?)
+                """, (key, value))
     
     def close(self) -> None:
         """Close database connection."""
@@ -278,6 +293,11 @@ class SqliteStateBackend(StateBackend):
     
     def _batch_insert_cache(self, items: Dict[str, Dict]) -> None:
         """Batch insert cache entries (faster than individual inserts)."""
+        with self._write_lock:
+            self._batch_insert_cache_unlocked(items)
+
+    def _batch_insert_cache_unlocked(self, items: Dict[str, Dict]) -> None:
+        """Batch insert cache entries without acquiring the write lock."""
         data = []
         for path, item in items.items():
             data.append((
@@ -300,6 +320,11 @@ class SqliteStateBackend(StateBackend):
     
     def _batch_insert_sync_state(self, items: Dict[str, Dict]) -> None:
         """Batch insert sync state entries."""
+        with self._write_lock:
+            self._batch_insert_sync_state_unlocked(items)
+
+    def _batch_insert_sync_state_unlocked(self, items: Dict[str, Dict]) -> None:
+        """Batch insert sync state entries without acquiring the write lock."""
         data = []
         for path, item in items.items():
             data.append((
