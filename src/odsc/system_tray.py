@@ -63,6 +63,12 @@ class SystemTrayIndicator:
         menu = self._create_menu()
         self.indicator.set_menu(menu)
         
+        # Activate immediately (optimistic) — if the panel is already running
+        # (e.g. daemon restart), the icon appears without waiting for the D-Bus
+        # watcher callback.  If the panel isn't ready yet, the watcher callback
+        # will re-activate later.
+        self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        
         logger.info("System tray indicator initialized")
     
     def _get_icon_theme_name(self) -> Optional[str]:
@@ -236,35 +242,44 @@ class SystemTrayIndicator:
     def run(self):
         """Run the GTK main loop (blocking)."""
         # Watch for StatusNotifierWatcher on the session bus — AppIndicator3
-        # registers tray icons with it.  The callback fires immediately if the
-        # watcher is already up, or as soon as it appears.  This replaces the
-        # fragile hardcoded timeout that races against panel startup.
+        # registers tray icons with it.  The watcher stays alive for the
+        # lifetime of the daemon so that if the panel restarts (e.g. GNOME
+        # Shell extension reload) the indicator is re-activated automatically.
         self._watcher_watch_id = Gio.bus_watch_name(
             Gio.BusType.SESSION,
             "org.kde.StatusNotifierWatcher",
             Gio.BusNameWatcherFlags.NONE,
             self._on_watcher_appeared,
-            None,
+            self._on_watcher_vanished,
         )
         
         logger.info("Starting system tray indicator main loop")
         Gtk.main()
     
     def _on_watcher_appeared(self, connection, name, name_owner):
-        """Called when StatusNotifierWatcher is available on the session bus."""
-        logger.debug("StatusNotifierWatcher available, activating indicator")
-        self._activate_indicator()
-        # One-shot: unwatch now that the indicator is registered
-        if self._watcher_watch_id is not None:
-            Gio.bus_unwatch_name(self._watcher_watch_id)
-            self._watcher_watch_id = None
+        """Called when StatusNotifierWatcher appears on the session bus.
+        
+        This fires immediately if the watcher is already present, and again
+        each time it reappears (e.g. after a panel restart).  We use
+        GLib.idle_add to ensure the GTK call runs on the main loop thread.
+        """
+        logger.debug("StatusNotifierWatcher available, scheduling activation")
+        GLib.idle_add(self._activate_indicator)
+    
+    def _on_watcher_vanished(self, connection, name):
+        """Called when StatusNotifierWatcher disappears from the session bus.
+        
+        This happens when the panel/extension is unloaded or restarted.
+        The indicator will be re-activated when the watcher reappears.
+        """
+        logger.debug("StatusNotifierWatcher vanished (panel restart?)")
     
     def _activate_indicator(self):
-        """Activate the indicator."""
+        """Activate the indicator (must be called on GTK main thread)."""
         if self.indicator:
             self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
             logger.debug("System tray indicator activated")
-        return False  # Safe to use as a GLib callback too
+        return False  # Remove from idle queue
     
     def quit(self):
         """Quit the GTK main loop."""
