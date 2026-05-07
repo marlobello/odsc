@@ -14,6 +14,8 @@ from typing import Dict, Any, Optional
 from cryptography.fernet import Fernet, InvalidToken
 import keyring
 
+from .file_io import atomic_write
+
 logger = logging.getLogger(__name__)
 
 _KEYRING_SERVICE = "odsc"
@@ -45,8 +47,7 @@ class TokenStore:
             token_data: Raw token dict (access_token, refresh_token, …).
         """
         encrypted = self._encrypt(token_data)
-        self.token_path.write_bytes(encrypted)
-        self.token_path.chmod(0o600)
+        atomic_write(self.token_path, encrypted, mode=0o600)
         logger.info("Token saved with encryption")
 
     def load(self) -> Optional[Dict[str, Any]]:
@@ -61,15 +62,18 @@ class TokenStore:
 
         try:
             encrypted_data = self.token_path.read_bytes()
+        except OSError as exc:
+            logger.error(f"Could not read token file: {exc}")
+            self.token_path.unlink(missing_ok=True)
+            return None
+
+        try:
             token_data = self._decrypt(encrypted_data)
             logger.info("Token loaded and decrypted successfully")
             return token_data
 
         except ValueError as exc:
-            # Corrupted or wrong-key token — safe to delete and re-auth
             logger.warning(f"Could not decrypt token: {exc}")
-            logger.warning("Token file may be from old version — please re-authenticate")
-            self.token_path.unlink(missing_ok=True)
             return None
 
         except Exception as exc:

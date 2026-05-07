@@ -45,6 +45,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from .file_io import atomic_write
 from .token_store import TokenStore
 from .validators import validate_config_value, ValidationError
 from .backends import StateBackend, SqliteStateBackend
@@ -136,10 +137,8 @@ class Config:
     
     def save(self) -> None:
         """Save configuration to file."""
-        with open(self.config_path, 'w') as f:
-            json.dump(self._config, f, indent=2)
-        # Secure file permissions (owner read/write only)
-        self.config_path.chmod(0o600)
+        data = json.dumps(self._config, indent=2).encode()
+        atomic_write(self.config_path, data, mode=0o600)
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value.

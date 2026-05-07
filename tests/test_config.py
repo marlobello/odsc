@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from odsc.config import Config
+from odsc.token_store import TokenStore
 
 
 def test_config_initialization():
@@ -57,6 +58,49 @@ def test_token_save_load():
         loaded_token = config.load_token()
         assert loaded_token == token_data
         assert loaded_token['access_token'] == 'test-access-token'
+
+
+def test_token_load_value_error_preserves_token_file(monkeypatch):
+    """Transient decrypt errors should not delete the stored token file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        token_path = Path(tmpdir) / ".onedrive_token"
+        token_path.write_bytes(b"encrypted-token")
+
+        store = TokenStore(token_path)
+        monkeypatch.setattr(store, "_decrypt", lambda _: (_ for _ in ()).throw(ValueError("keyring unavailable")))
+
+        assert store.load() is None
+        assert token_path.exists()
+        assert token_path.read_bytes() == b"encrypted-token"
+
+
+def test_config_save_uses_atomic_temp_file_cleanup():
+    """Config saves should replace the file without leaving temp files behind."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_dir = Path(tmpdir)
+        config = Config(config_dir)
+
+        config.set('client_id', 'df3a0308-c302-4962-b115-08bd59526bc5')
+
+        assert json.loads(config.config_path.read_text())['client_id'] == 'df3a0308-c302-4962-b115-08bd59526bc5'
+        assert not list(config_dir.glob("*.tmp"))
+
+
+def test_token_save_uses_atomic_temp_file_cleanup():
+    """Token saves should replace the file without leaving temp files behind."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_dir = Path(tmpdir)
+        config = Config(config_dir)
+        token_data = {
+            'access_token': 'test-access-token',
+            'refresh_token': 'test-refresh-token',
+            'expires_in': 3600
+        }
+
+        config.save_token(token_data)
+
+        assert config.token_path.exists()
+        assert not list(config_dir.glob("*.tmp"))
 
 
 def test_state_save_load():
