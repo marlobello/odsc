@@ -47,11 +47,21 @@ class OneDriveClient:
             token_data: Existing token data (optional)
         """
         self.client_id = client_id or self.DEFAULT_CLIENT_ID
-        self.token_data = token_data or {}
+        self.token_data: Dict[str, Any] = {}
         self._session = requests.Session()
         self._session.verify = certifi.where()  # Explicit certificate validation
         self.state: Optional[str] = None  # For CSRF protection
-        self._token_lock = threading.Lock()
+        self._token_lock = threading.RLock()
+        self._access_token: Optional[str] = None
+        self._token_expires_at: float = 0.0
+        with self._token_lock:
+            self._set_token_data_locked(token_data or {})
+
+    def _set_token_data_locked(self, token_data: Dict[str, Any]) -> None:
+        """Replace cached token state while holding ``self._token_lock``."""
+        self.token_data = dict(token_data)
+        self._access_token = self.token_data.get('access_token')
+        self._token_expires_at = float(self.token_data.get('expires_at', 0) or 0)
     
     def _sanitize_for_log(self, text: str) -> str:
         """Remove sensitive data from log output.
@@ -137,8 +147,10 @@ class OneDriveClient:
             logger.debug(f"Token exchange response status: {response.status_code}")
             response.raise_for_status()
             
-            self.token_data = response.json()
-            self.token_data['expires_at'] = time.time() + self.token_data.get('expires_in', 3600)
+            token_data = response.json()
+            token_data['expires_at'] = time.time() + token_data.get('expires_in', 3600)
+            with self._token_lock:
+                self._set_token_data_locked(token_data)
             logger.info("Successfully obtained access token")
             return self.token_data
             
@@ -152,15 +164,17 @@ class OneDriveClient:
         Returns:
             New token data
         """
-        if 'refresh_token' not in self.token_data:
-            logger.error("No refresh token available")
-            raise ValueError("No refresh token available")
+        with self._token_lock:
+            refresh_token = self.token_data.get('refresh_token')
+            if not refresh_token:
+                logger.error("No refresh token available")
+                raise ValueError("No refresh token available")
         
         logger.info("Refreshing access token")
         
         data = {
             'client_id': self.client_id,
-            'refresh_token': self.token_data['refresh_token'],
+            'refresh_token': refresh_token,
             'grant_type': 'refresh_token',
         }
         
@@ -169,8 +183,10 @@ class OneDriveClient:
             logger.debug(f"Refresh token response status: {response.status_code}")
             response.raise_for_status()
             
-            self.token_data = response.json()
-            self.token_data['expires_at'] = time.time() + self.token_data.get('expires_in', 3600)
+            token_data = response.json()
+            token_data['expires_at'] = time.time() + token_data.get('expires_in', 3600)
+            with self._token_lock:
+                self._set_token_data_locked(token_data)
             logger.info("Successfully refreshed access token")
             return self.token_data
             
@@ -184,16 +200,11 @@ class OneDriveClient:
         Uses a lock to prevent multiple parallel workers from racing to
         refresh the same expired token simultaneously.
         """
-        if not self.token_data:
-            raise ValueError("Not authenticated. Call authenticate() first.")
-        
-        # Fast path: token is still valid
-        if self.token_data.get('expires_at', 0) >= time.time() + 300:
-            return
-        
-        # Slow path: acquire lock and re-check (another thread may have refreshed)
         with self._token_lock:
-            if self.token_data.get('expires_at', 0) < time.time() + 300:
+            if not self.token_data:
+                raise ValueError("Not authenticated. Call authenticate() first.")
+
+            if self._token_expires_at < time.time() + 300:
                 logger.info("Token expired or expiring soon, refreshing...")
                 self.refresh_token()
     
@@ -211,7 +222,9 @@ class OneDriveClient:
         self._ensure_token()
         
         headers = kwargs.pop('headers', {})
-        headers['Authorization'] = f"Bearer {self.token_data['access_token']}"
+        if not self._access_token:
+            raise ValueError("Not authenticated. Call authenticate() first.")
+        headers['Authorization'] = f"Bearer {self._access_token}"
         
         # Apply a default timeout so stalled transfers never block a worker
         # indefinitely. Callers may override by passing timeout= explicitly.
@@ -316,7 +329,9 @@ class OneDriveClient:
         self._ensure_token()
         
         headers = kwargs.pop('headers', {})
-        headers['Authorization'] = f"Bearer {self.token_data['access_token']}"
+        if not self._access_token:
+            raise ValueError("Not authenticated. Call authenticate() first.")
+        headers['Authorization'] = f"Bearer {self._access_token}"
         
         kwargs.setdefault('timeout', (10, 300))
         response = self._session.request('GET', url, headers=headers, **kwargs)
@@ -465,30 +480,33 @@ class OneDriveClient:
         endpoint = f"/me/drive/items/{file_id}/content"
         response = self._api_request('GET', endpoint, stream=True)
         
-        # Create parent directories
+        # Create parent directories before opening the temp file. The temp file
+        # must live in the same directory as the final destination so the final
+        # replace is atomic on the target filesystem.
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Download with temporary file first for atomicity
-        temp_path = local_path.with_suffix(local_path.suffix + '.tmp')
+
+        temp_path = local_path.parent / f"{local_path.name}.{secrets.token_hex(8)}.odsc_tmp"
         try:
             with response:
-                # Use os.open with O_CREAT|O_EXCL to prevent TOCTOU symlink attacks
-                fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                # Use os.open with O_CREAT|O_EXCL to prevent temp-file collisions
+                # and to honour the user's umask for the final file permissions.
+                fd = os.open(temp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
                 with os.fdopen(fd, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=chunk_size):
                         f.write(chunk)
-            
-            # Move to final location only if download succeeded
-            temp_path.replace(local_path)
-            
+
+                    f.flush()
+                    os.fsync(f.fileno())
+
+            os.replace(temp_path, local_path)
+
             logger.info(f"Downloaded: {local_path}")
             return metadata
-            
-        except Exception as e:
-            # Clean up temp file on error
-            if temp_path.exists():
-                temp_path.unlink()
-            raise
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(f"Failed to clean up temp download file: {temp_path}", exc_info=True)
     
     @retry(
         stop=stop_after_attempt(3),
