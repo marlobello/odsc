@@ -20,6 +20,7 @@ State Structure
     Per-path counter of consecutive local-deletion failures.
 """
 
+import copy
 import logging
 import threading
 from datetime import datetime
@@ -51,16 +52,16 @@ class SyncStateManager:
 
     def load(self) -> None:
         """Load state from the persistent backend (replaces in-memory state)."""
-        loaded = self._load()
         with self._lock:
+            loaded = copy.deepcopy(self._load() or {})
             self._state = loaded
             self._ensure_initialized()
 
     def save(self) -> None:
         """Persist current in-memory state to the backend."""
         with self._lock:
-            snapshot = dict(self._state)
-        self._save(snapshot)
+            snapshot = copy.deepcopy(self._state)
+            self._save(snapshot)
 
     def reload(self) -> None:
         """Reload state from the backend under the lock.
@@ -69,8 +70,8 @@ class SyncStateManager:
         changes while preventing concurrent watchdog writes from racing
         against the replacement.
         """
-        loaded = self._load()
         with self._lock:
+            loaded = copy.deepcopy(self._load() or {})
             self._state = loaded
             self._ensure_initialized()
 
@@ -105,7 +106,7 @@ class SyncStateManager:
     def get_file_entry(self, rel_path: str) -> Dict[str, Any]:
         """Return the sync-state entry for *rel_path*, or ``{}`` if absent."""
         with self._lock:
-            return dict(self._state["files"].get(rel_path, {}))
+            return copy.deepcopy(self._state["files"].get(rel_path, {}))
 
     def set_file_entry(
         self,
@@ -152,7 +153,7 @@ class SyncStateManager:
         without a separate load/save cycle that could race with the daemon.
         """
         with self._lock:
-            self._state["files"].update(updates)
+            self._state["files"].update(copy.deepcopy(updates))
 
     def rename_entry(self, old_path: str, new_path: str) -> None:
         """Rename a single path in both ``files`` and ``file_cache``.
@@ -201,34 +202,37 @@ class SyncStateManager:
     def get_cache_entry(self, path: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             entry = self._state["file_cache"].get(path)
-            return dict(entry) if entry else None
+            return copy.deepcopy(entry) if entry else None
 
     def set_cache_entry(self, path: str, metadata: Dict[str, Any]) -> None:
         with self._lock:
-            self._state["file_cache"][path] = metadata
+            self._state["file_cache"][path] = copy.deepcopy(metadata)
 
     def all_cache_items(self) -> List[Tuple[str, Dict[str, Any]]]:
         """Return a snapshot list of ``(path, metadata)`` cache entries."""
         with self._lock:
-            return list(self._state["file_cache"].items())
+            return [
+                (path, copy.deepcopy(metadata))
+                for path, metadata in self._state["file_cache"].items()
+            ]
 
     def all_remote_files(self) -> Dict[str, Dict[str, Any]]:
         """Return all non-folder cache entries."""
         with self._lock:
-            return {
-                p: dict(m)
+            return copy.deepcopy({
+                p: m
                 for p, m in self._state["file_cache"].items()
                 if not m.get("is_folder", False)
-            }
+            })
 
     def all_remote_folders(self) -> Dict[str, Dict[str, Any]]:
         """Return all folder cache entries."""
         with self._lock:
-            return {
-                p: dict(m)
+            return copy.deepcopy({
+                p: m
                 for p, m in self._state["file_cache"].items()
                 if m.get("is_folder", False)
-            }
+            })
 
     # ------------------------------------------------------------------ #
     # Deletion failure tracking                                            #
