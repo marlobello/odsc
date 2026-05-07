@@ -18,6 +18,12 @@ class AuthCallbackHandler(http.server.SimpleHTTPRequestHandler):
     auth_code = None
     state = None  # For CSRF validation
 
+    @classmethod
+    def reset(cls) -> None:
+        """Clear any previously captured OAuth callback data."""
+        cls.auth_code = None
+        cls.state = None
+
     def do_GET(self) -> None:
         """Handle the GET request that OneDrive redirects to after auth."""
         parsed = urlparse(self.path)

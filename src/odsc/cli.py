@@ -2,10 +2,11 @@
 """Command-line utility for ODSC."""
 
 import argparse
-import sys
 import json
+import secrets
 import urllib.request
 import socketserver
+import sys
 import webbrowser
 from pathlib import Path
 
@@ -29,7 +30,8 @@ def cmd_auth(args):
     
     # Create client and get auth URL
     client = OneDriveClient(client_id)
-    auth_url = client.get_auth_url()
+    expected_state = secrets.token_urlsafe(32)
+    auth_url = client.get_auth_url(expected_state)
     
     print(f"Opening browser for authentication...")
     print(f"If browser doesn't open, visit: {auth_url}")
@@ -38,6 +40,7 @@ def cmd_auth(args):
     # Start local server for callback (localhost only for security)
     print("Waiting for authentication...")
     try:
+        AuthCallbackHandler.reset()
         with socketserver.TCPServer(("127.0.0.1", 8080), AuthCallbackHandler) as httpd:
             httpd.timeout = 300  # 5 minute timeout
             httpd.handle_request()
@@ -47,18 +50,21 @@ def cmd_auth(args):
             return 1
         raise
     
-    if AuthCallbackHandler.auth_code:
+    auth_code = AuthCallbackHandler.auth_code
+    received_state = AuthCallbackHandler.state
+    AuthCallbackHandler.reset()
+
+    if auth_code:
         # Validate state parameter for CSRF protection
-        if AuthCallbackHandler.state:
-            if not client.validate_state(AuthCallbackHandler.state):
-                print("✗ Authentication failed: Invalid state parameter (possible CSRF attack)")
-                return 1
-        else:
+        if not received_state:
             print("✗ Authentication failed: No state parameter received")
+            return 1
+        if received_state != expected_state or not client.validate_state(received_state):
+            print("✗ Authentication failed: Invalid state parameter (possible CSRF attack)")
             return 1
         
         try:
-            token_data = client.exchange_code(AuthCallbackHandler.auth_code)
+            token_data = client.exchange_code(auth_code)
             config.save_token(token_data)
             print("✓ Authentication successful!")
             return 0

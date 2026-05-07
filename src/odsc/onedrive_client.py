@@ -68,14 +68,17 @@ class OneDriveClient:
         text = re.sub(r'Bearer\s+[\w\-\.]+', 'Bearer ***REDACTED***', text, flags=re.IGNORECASE)
         return text
     
-    def get_auth_url(self) -> str:
+    def get_auth_url(self, state: Optional[str] = None) -> str:
         """Get OAuth2 authorization URL with CSRF protection.
+
+        Args:
+            state: Optional pre-generated state nonce for CSRF protection.
         
         Returns:
             Authorization URL
         """
         # Generate CSRF protection state parameter
-        self.state = secrets.token_urlsafe(32)
+        self.state = state or secrets.token_urlsafe(32)
         
         params = {
             'client_id': self.client_id,

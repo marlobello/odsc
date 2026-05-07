@@ -1,6 +1,7 @@
 """Menu bar creation and handlers for ODSC GUI."""
 
 import logging
+import secrets
 import threading
 import webbrowser
 import socketserver
@@ -120,7 +121,8 @@ class MenuBarMixin:
         logger.info(f"Using client_id: {client_id if client_id else 'DEFAULT'}")
         
         temp_client = OneDriveClient(client_id)
-        auth_url = temp_client.get_auth_url()
+        expected_state = secrets.token_urlsafe(32)
+        auth_url = temp_client.get_auth_url(expected_state)
         
         logger.info(f"Opening browser for authentication")
         webbrowser.open(auth_url)
@@ -128,27 +130,31 @@ class MenuBarMixin:
         def wait_for_callback():
             try:
                 logger.info("Starting local callback server on localhost:8080")
+                AuthCallbackHandler.reset()
                 with socketserver.TCPServer(("127.0.0.1", 8080), AuthCallbackHandler) as httpd:
                     httpd.timeout = 300
                     logger.debug("Waiting for OAuth callback...")
                     httpd.handle_request()
-                    
-                    if AuthCallbackHandler.auth_code:
-                        if AuthCallbackHandler.state:
-                            if not temp_client.validate_state(AuthCallbackHandler.state):
-                                logger.error("State validation failed")
-                                GLib.idle_add(self._show_error, 
-                                            "Authentication failed:\nInvalid state parameter (possible CSRF attack)")
-                                return
-                        else:
+
+                    auth_code = AuthCallbackHandler.auth_code
+                    received_state = AuthCallbackHandler.state
+                    AuthCallbackHandler.reset()
+
+                    if auth_code:
+                        if not received_state:
                             logger.error("No state parameter received")
                             GLib.idle_add(self._show_error, 
                                         "Authentication failed:\nNo state parameter received")
                             return
-                        
+                        if received_state != expected_state or not temp_client.validate_state(received_state):
+                            logger.error("State validation failed")
+                            GLib.idle_add(self._show_error, 
+                                        "Authentication failed:\nInvalid state parameter (possible CSRF attack)")
+                            return
+
                         logger.info("Received authorization code from callback")
                         try:
-                            token_data = temp_client.exchange_code(AuthCallbackHandler.auth_code)
+                            token_data = temp_client.exchange_code(auth_code)
                             self.config.save_token(token_data)
                             self.client = temp_client
                             logger.info("Authentication successful!")
