@@ -92,7 +92,7 @@ class MenuBarMixin:
     
     def _update_auth_menu_state(self) -> None:
         """Update authentication menu items based on current auth state."""
-        is_authenticated = self.client is not None
+        is_authenticated = self._get_client() is not None
         
         if self.login_menu_item:
             self.login_menu_item.set_sensitive(not is_authenticated)
@@ -109,7 +109,7 @@ class MenuBarMixin:
     
     def _on_auth_info_clicked(self, widget) -> None:
         """Handle Authentication Info menu item click."""
-        dialog = AuthInfoDialog(self, self.config, self.client)
+        dialog = AuthInfoDialog(self, self.config, self._get_client())
         dialog.run()
         dialog.destroy()
     
@@ -156,7 +156,8 @@ class MenuBarMixin:
                         try:
                             token_data = temp_client.exchange_code(auth_code)
                             self.config.save_token(token_data)
-                            self.client = temp_client
+                            with self._state_lock:
+                                self.client = temp_client
                             logger.info("Authentication successful!")
                             
                             GLib.idle_add(self._on_auth_success)
@@ -187,7 +188,8 @@ class MenuBarMixin:
     def _logout(self) -> None:
         """Log out and clear authentication."""
         self.config.token_path.unlink(missing_ok=True)
-        self.client = None
+        with self._state_lock:
+            self.client = None
         self.file_store.clear()
         
         self.keep_local_button.set_sensitive(False)

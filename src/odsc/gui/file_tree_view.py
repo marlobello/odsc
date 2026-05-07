@@ -345,6 +345,10 @@ class FileTreeViewMixin:
         logger.debug("Scanning for pending uploads...")
         pending_count = 0
         
+        def append_pending_upload(parent_iter, row_data):
+            self.file_store.append(parent_iter, row_data)
+            return False
+
         for path in sync_dir.rglob('*'):
             if any(part.startswith('.') for part in path.parts):
                 continue
@@ -369,13 +373,25 @@ class FileTreeViewMixin:
                         size = self._format_size(path.stat().st_size)
                         modified = ""
                         
-                        state = self.config.load_state()
+                        state = self._load_state_locked()
                         file_state = state.get('files', {}).get(rel_path, {})
                         error_msg = file_state.get('upload_error', '')
                         
-                        self.file_store.append(parent_iter, [
-                            icon, f"{name} (pending upload)", size, modified, True, "", False, rel_path, error_msg
-                        ])
+                        GLib.idle_add(
+                            append_pending_upload,
+                            parent_iter,
+                            [
+                                icon,
+                                f"{name} (pending upload)",
+                                size,
+                                modified,
+                                True,
+                                "",
+                                False,
+                                rel_path,
+                                error_msg,
+                            ],
+                        )
                         pending_count += 1
                         logger.debug(f"Added pending upload: {rel_path}")
                         

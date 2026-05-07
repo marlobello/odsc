@@ -193,8 +193,9 @@ class FileOperationsMixin:
                 
                 cleanup_empty_parent_dirs(local_path, self.config.sync_directory)
                 
-                self._state_mgr.mark_file_not_downloaded(rel_path)
-                self._state_mgr.save()
+                with self._state_lock:
+                    self._state_mgr.mark_file_not_downloaded(rel_path)
+                    self._state_mgr.save()
                 
                 GLib.idle_add(self._update_status, f"Removed local copy of {file_name}")
                 GLib.idle_add(self._load_remote_files)
@@ -239,9 +240,10 @@ class FileOperationsMixin:
 
             # Single atomic state update + save
             try:
-                for rel_path in not_downloaded_paths:
-                    self._state_mgr.mark_file_not_downloaded(rel_path)
-                self._state_mgr.save()
+                with self._state_lock:
+                    for rel_path in not_downloaded_paths:
+                        self._state_mgr.mark_file_not_downloaded(rel_path)
+                    self._state_mgr.save()
             except Exception as e:
                 logger.error(f"Failed to save state after batch remove: {e}")
 
@@ -276,7 +278,11 @@ class FileOperationsMixin:
         
         def download_in_thread():
             try:
-                file_info = self.client.get_file_metadata(file_id)
+                client = self._get_client()
+                if not client:
+                    raise RuntimeError("Not authenticated. Please authenticate first.")
+
+                file_info = client.get_file_metadata(file_id)
                 parent_path = file_info.get('parentReference', {}).get('path', '')
                 if parent_path:
                     parent_path = sanitize_onedrive_path(parent_path)
@@ -284,18 +290,19 @@ class FileOperationsMixin:
                 rel_path = str(Path(parent_path) / file_name) if parent_path else file_name
                 local_path = validate_sync_path(rel_path, self.config.sync_directory)
                 
-                metadata = self.client.download_file(
+                metadata = client.download_file(
                     file_id, local_path,
                     chunk_size=self.config.download_chunk_size,
                 )
                 
-                self._state_mgr.set_file_entry(
-                    rel_path,
-                    mtime=local_path.stat().st_mtime,
-                    size=file_info.get('size', 0),
-                    metadata=metadata,
-                )
-                self._state_mgr.save()
+                with self._state_lock:
+                    self._state_mgr.set_file_entry(
+                        rel_path,
+                        mtime=local_path.stat().st_mtime,
+                        size=file_info.get('size', 0),
+                        metadata=metadata,
+                    )
+                    self._state_mgr.save()
                 
                 logger.info(f"Downloaded and marked for sync: {rel_path}")
                 GLib.idle_add(self._update_status, f"Downloaded {file_name}")
@@ -320,13 +327,17 @@ class FileOperationsMixin:
         
         def download_one(file_id, file_name, index):
             GLib.idle_add(self._update_status, f"Downloading {index}/{total}: {file_name}")
-            file_info = self.client.get_file_metadata(file_id)
+            client = self._get_client()
+            if not client:
+                raise RuntimeError("Not authenticated. Please authenticate first.")
+
+            file_info = client.get_file_metadata(file_id)
             parent_path = file_info.get('parentReference', {}).get('path', '')
             if parent_path:
                 parent_path = sanitize_onedrive_path(parent_path)
             rel_path = str(Path(parent_path) / file_name) if parent_path else file_name
             local_path = validate_sync_path(rel_path, self.config.sync_directory)
-            metadata = self.client.download_file(
+            metadata = client.download_file(
                 file_id, local_path,
                 chunk_size=self.config.download_chunk_size,
             )
@@ -362,8 +373,9 @@ class FileOperationsMixin:
                         error_count += 1
             
             try:
-                self._state_mgr.patch_file_entries(state_updates)
-                self._state_mgr.save()
+                with self._state_lock:
+                    self._state_mgr.patch_file_entries(state_updates)
+                    self._state_mgr.save()
                 logger.info(f"Batch download complete: {success_count} succeeded, {error_count} failed")
             except Exception as e:
                 logger.error(f"Failed to save state after batch download: {e}")

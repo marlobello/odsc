@@ -41,6 +41,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         
         self.config = Config()
         self._daemon = DaemonController()
+        self._state_lock = threading.Lock()
         
         setup_logging(level=self.config.log_level, log_file=self.config.log_path)
         logger.info("=== ODSC GUI Starting ===")
@@ -51,6 +52,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         self.remote_files: List[Dict[str, Any]] = []
         
         self.executor = ThreadPoolExecutor(max_workers=2)
+        self.connect("destroy", self._on_destroy)
         
         self.login_menu_item: Optional[Gtk.MenuItem] = None
         self.logout_menu_item: Optional[Gtk.MenuItem] = None
@@ -83,8 +85,38 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         client_id = self.config.client_id or None
         
         token_data = self.config.load_token()
-        self.client = OneDriveClient(client_id, token_data)
+        with self._state_lock:
+            self.client = OneDriveClient(client_id, token_data)
         return True
+
+    def _on_destroy(self, widget) -> None:
+        """Release background resources when the window is destroyed."""
+        self.executor.shutdown(wait=False)
+
+    def _get_client(self) -> Optional[OneDriveClient]:
+        """Return the current client reference safely."""
+        with self._state_lock:
+            return self.client
+
+    def _load_state_locked(self) -> Dict[str, Any]:
+        """Load persisted state while holding the GUI state lock."""
+        with self._state_lock:
+            return self.config.load_state()
+
+    def _save_state_locked(self, state: Dict[str, Any]) -> None:
+        """Save persisted state while holding the GUI state lock."""
+        with self._state_lock:
+            self.config.save_state(state)
+
+    def _set_remote_files(self, files: List[Dict[str, Any]]) -> None:
+        """Replace cached remote files safely."""
+        with self._state_lock:
+            self.remote_files = list(files)
+
+    def _get_remote_file_count(self) -> int:
+        """Return the cached remote file count safely."""
+        with self._state_lock:
+            return len(self.remote_files)
 
     def _create_watermark(self) -> Optional[Gtk.Image]:
         """Create a subtle centered watermark image from the ODSC logo.
@@ -528,7 +560,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
     
     def _load_remote_files(self) -> None:
         """Load files from OneDrive using delta query and caching."""
-        if not self.client:
+        if not self._get_client():
             self._show_error("Not authenticated. Please authenticate first.")
             return
         
@@ -536,7 +568,11 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         
         def load_in_thread():
             try:
-                state = self.config.load_state()
+                client = self._get_client()
+                if not client:
+                    raise RuntimeError("Not authenticated. Please authenticate first.")
+
+                state = self._load_state_locked()
                 delta_token = state.get('delta_token')
                 file_cache = state.get('file_cache', {})
                 
@@ -544,14 +580,14 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                     logger.info("Using delta query for incremental refresh")
                     GLib.idle_add(self._update_status, "Checking for changes...")
                     
-                    changes, new_delta_token = self.client.get_delta(delta_token)
+                    changes, new_delta_token = client.get_delta(delta_token)
                     
                     # Use shared service to process delta changes
                     file_cache = FileCacheService.process_delta_changes(changes, file_cache)
                     
                     state['delta_token'] = new_delta_token
                     state['file_cache'] = file_cache
-                    self.config.save_state(state)
+                    self._save_state_locked(state)
                     
                     # Convert cache to file list
                     files = FileCacheService.cache_to_file_list(file_cache)
@@ -560,14 +596,14 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                     logger.info("Initial load: fetching all files")
                     GLib.idle_add(self._update_status, "Fetching all files (first time)...")
                     
-                    changes, new_delta_token = self.client.get_delta(None)
+                    changes, new_delta_token = client.get_delta(None)
                     
                     # Use shared service to build initial cache
                     file_cache = FileCacheService.build_initial_cache(changes)
                     
                     state['delta_token'] = new_delta_token
                     state['file_cache'] = file_cache
-                    self.config.save_state(state)
+                    self._save_state_locked(state)
                     
                     files = changes
                     logger.info(f"Initial load complete: {len(files)} items")
@@ -600,7 +636,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         Args:
             files: List of file metadata from OneDrive
         """
-        self.remote_files = files
+        self._set_remote_files(files)
         
         expanded_paths = self._save_expanded_state()
         scroll_position = self._save_scroll_position()
@@ -653,7 +689,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         self._remote_files_set = set()
         
         # Load state ONCE before processing (not per file!)
-        state = self.config.load_state()
+        state = self._load_state_locked()
         files_state = state.get('files', {})
         
         # Process items in chunks for responsive UI
@@ -814,7 +850,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         self._restore_expanded_state(expanded_paths)
         self._restore_scroll_position(scroll_position)
         
-        total_items = len(self.remote_files)
+        total_items = self._get_remote_file_count()
         self._update_status(f"Loaded {total_items} items")
         logger.info(f"File tree loaded with {total_items} items")
         
