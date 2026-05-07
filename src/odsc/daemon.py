@@ -30,11 +30,14 @@ UPDATE_CHECK_INTERVAL = 86400  # 24 hours
 # Try to import system tray (optional - may not be available in headless environments)
 try:
     from .system_tray import SystemTrayIndicator
+    import gi
+    gi.require_version('Gtk', '3.0')
+    from gi.repository import Gtk, GLib
     SYSTEM_TRAY_AVAILABLE = True
-except ImportError:
+except (ImportError, ValueError):
     SYSTEM_TRAY_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("System tray not available (missing dependencies)")
+    Gtk = None  # type: ignore[assignment]
+    GLib = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -125,16 +128,17 @@ class SyncDaemon:
         self.observer: Optional[Observer] = None
         self.event_handler: Optional[SyncEventHandler] = None
         self._running = False
+        self._stopping = False
+        self._gtk_mode = False
         self._sync_thread: Optional[threading.Thread] = None
         self.system_tray: Optional['SystemTrayIndicator'] = None
-        self._tray_thread: Optional[threading.Thread] = None
         self._wakeup_event = threading.Event()
         self._last_update_check: float = 0.0
 
         self.state_mgr = SyncStateManager(self.config.load_state, self.config.save_state)
         self.state_mgr.load()
         
-        # Setup signal handlers
+        # Setup signal handlers (Python-level, used during startup and headless mode)
         self._setup_signal_handlers()
     
     def _setup_signal_handlers(self) -> None:
@@ -193,12 +197,20 @@ class SyncDaemon:
         sync_dir = self.config.sync_directory
         sync_dir.mkdir(parents=True, exist_ok=True)
         
-        # Start system tray indicator if available
-        if SYSTEM_TRAY_AVAILABLE and (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
+        # Create system tray indicator if available (on main thread)
+        use_gtk = (
+            SYSTEM_TRAY_AVAILABLE
+            and (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
+        )
+        if use_gtk:
             try:
-                self._start_system_tray()
+                self.system_tray = SystemTrayIndicator(daemon=self)
+                self.system_tray.start_watching()
+                self._gtk_mode = True
             except Exception as e:
                 logger.warning(f"Could not start system tray: {e}")
+                self.system_tray = None
+                self._gtk_mode = False
         
         # Set up file system monitoring
         self.event_handler = SyncEventHandler(self)
@@ -212,14 +224,34 @@ class SyncDaemon:
         
         logger.info(f"Sync daemon started. Monitoring: {sync_dir}")
         
-        try:
-            while self._running:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            self.stop()
+        if self._gtk_mode:
+            # Install GLib-level signal handlers so SIGTERM/SIGINT are handled
+            # inside the GTK main loop (Python signal handlers don't fire
+            # while Gtk.main() blocks in C code).
+            GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, self._on_glib_signal, signal.SIGTERM)
+            GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, self._on_glib_signal, signal.SIGINT)
+            
+            # Enter GTK main loop on the main thread (blocks until quit)
+            if self._running:
+                logger.info("Entering GTK main loop on main thread")
+                Gtk.main()
+        else:
+            # Headless mode: simple sleep loop (Python signal handlers work here)
+            try:
+                while self._running:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
+        
+        # After loop exits, ensure clean shutdown
+        self.stop()
     
     def stop(self) -> None:
-        """Stop the sync daemon."""
+        """Stop the sync daemon (idempotent — safe to call multiple times)."""
+        if self._stopping:
+            return
+        self._stopping = True
+        
         logger.info("Stopping sync daemon...")
         self._running = False
         
@@ -232,7 +264,7 @@ class SyncDaemon:
         
         if self.observer:
             self.observer.stop()
-            self.observer.join()
+            self.observer.join(timeout=5)
         
         if self._sync_thread:
             self._sync_thread.join(timeout=5)
@@ -245,18 +277,18 @@ class SyncDaemon:
         
         logger.info("Sync daemon stopped")
     
-    def _start_system_tray(self):
-        """Start the system tray indicator in a separate thread."""
-        def run_tray():
-            try:
-                self.system_tray = SystemTrayIndicator(daemon=self)
-                self.system_tray.run()  # Blocking GTK main loop
-            except Exception as e:
-                logger.error(f"System tray error: {e}", exc_info=True)
+    def _on_glib_signal(self, signum):
+        """Handle SIGTERM/SIGINT inside the GTK main loop.
         
-        self._tray_thread = threading.Thread(target=run_tray, daemon=True)
-        self._tray_thread.start()
-        logger.info("System tray indicator started")
+        This callback runs on the GTK main thread so it's safe to call
+        Gtk.main_quit() and GTK/GLib APIs directly.
+        """
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        self._running = False
+        # Quit the GTK loop — control returns to start() which calls stop()
+        Gtk.main_quit()
+        return GLib.SOURCE_REMOVE
+    
     
     def _sync_loop(self) -> None:
         """Main sync loop (runs periodically)."""

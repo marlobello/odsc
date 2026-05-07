@@ -239,12 +239,15 @@ class SystemTrayIndicator:
         except Exception as e:
             logger.error(f"Failed to open browser: {e}")
     
-    def run(self):
-        """Run the GTK main loop (blocking)."""
-        # Watch for StatusNotifierWatcher on the session bus — AppIndicator3
-        # registers tray icons with it.  The watcher stays alive for the
-        # lifetime of the daemon so that if the panel restarts (e.g. GNOME
-        # Shell extension reload) the indicator is re-activated automatically.
+    def start_watching(self):
+        """Register the D-Bus name watcher for StatusNotifierWatcher.
+        
+        Call this before entering the GTK main loop.  It can be called from
+        __init__ or externally — the watcher stays alive for the daemon's
+        lifetime so that panel restarts trigger re-activation automatically.
+        """
+        if self._watcher_watch_id is not None:
+            return  # Already watching
         self._watcher_watch_id = Gio.bus_watch_name(
             Gio.BusType.SESSION,
             "org.kde.StatusNotifierWatcher",
@@ -252,7 +255,11 @@ class SystemTrayIndicator:
             self._on_watcher_appeared,
             self._on_watcher_vanished,
         )
-        
+        logger.debug("Registered StatusNotifierWatcher bus watcher")
+
+    def run(self):
+        """Register the bus watcher and run the GTK main loop (blocking)."""
+        self.start_watching()
         logger.info("Starting system tray indicator main loop")
         Gtk.main()
     
