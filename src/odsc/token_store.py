@@ -64,7 +64,6 @@ class TokenStore:
             encrypted_data = self.token_path.read_bytes()
         except OSError as exc:
             logger.error(f"Could not read token file: {exc}")
-            self.token_path.unlink(missing_ok=True)
             return None
 
         try:

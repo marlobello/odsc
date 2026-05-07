@@ -559,8 +559,6 @@ class SyncDaemon:
         if not hasattr(self, '_deleted_from_remote') or not self._deleted_from_remote:
             return  # Nothing to verify
         
-        import shutil
-        
         for path in list(self._deleted_from_remote):
             local_path = sync_dir / path
             
@@ -580,57 +578,12 @@ class SyncDaemon:
                 self.state_mgr.clear_deletion_failure(path)  # Clear any previous failure count
                 continue
             
-            # Deletion failed or incomplete - retry with more aggressive approach
-            logger.warning(f"Deletion incomplete, retrying: {path}")
-            
-            for attempt in range(3):
-                try:
-                    if local_path.is_dir():
-                        # Re-validate before rmtree to prevent symlink attacks
-                        validate_sync_path(path, sync_dir)
-                        # For directories, use rmtree directly (skip send2trash)
-                        shutil.rmtree(local_path, ignore_errors=False)
-                        logger.info(f"Directory deleted on retry {attempt + 1}: {path}")
-                    else:
-                        # For files, use unlink with try/except (avoid TOCTOU)
-                        try:
-                            local_path.unlink()
-                            logger.info(f"File deleted on retry {attempt + 1}: {path}")
-                        except FileNotFoundError:
-                            logger.debug(f"File already gone during retry: {path}")
-                    
-                    # Verify it's really gone
-                    try:
-                        local_path.stat()
-                        # Still exists, continue retrying
-                    except FileNotFoundError:
-                        # Successfully deleted
-                        self.state_mgr.clear_deletion_failure(path)
-                        break
-                    
-                except PermissionError as e:
-                    if attempt < 2:
-                        # Wait briefly and retry (file might be locked)
-                        logger.debug(f"Permission denied, will retry: {e}")
-                        time.sleep(0.5)
-                    else:
-                        count = self.state_mgr.increment_deletion_failure(path)
-                        log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.debug
-                        log_level(
-                            f"Permission denied after 3 attempts: {path} "
-                            f"(total failures: {count})"
-                        )
-                except Exception as e:
-                    if attempt < 2:
-                        logger.debug(f"Deletion failed, will retry: {e}")
-                        time.sleep(0.5)
-                    else:
-                        count = self.state_mgr.increment_deletion_failure(path)
-                        log_level = logger.error if count >= 10 else logger.warning if count >= 3 else logger.debug
-                        log_level(
-                            f"Could not delete after 3 attempts: {path} - {e} "
-                            f"(total failures: {count})"
-                        )
+            # Deletion failed or incomplete — log and skip.
+            # Do NOT permanently delete; leave file in place for safety.
+            logger.warning(
+                f"Deletion incomplete (trash may have failed): {path}. "
+                "File left in place to prevent data loss."
+            )
     
     def _process_remote_folder(self, item: Dict[str, Any], sync_dir: Path) -> None:
         """Process a folder from OneDrive delta."""
@@ -985,19 +938,12 @@ class SyncDaemon:
                 logger.warning(f"Item not found for recycling: {rel_path}")
         except Exception as e:
             logger.error(f"Failed to move {rel_path} to recycle bin: {e}")
-            # Fallback to permanent deletion if trash fails
-            try:
-                if local_path.is_dir():
-                    # For directories, use rmtree
-                    import shutil
-                    shutil.rmtree(local_path, ignore_errors=False)
-                    logger.warning(f"Permanently deleted folder (trash failed): {rel_path}")
-                else:
-                    # For files, use unlink
-                    local_path.unlink(missing_ok=True)
-                    logger.warning(f"Permanently deleted file (trash failed): {rel_path}")
-            except Exception as e2:
-                logger.error(f"Failed to delete {rel_path}: {e2}")
+            # Do NOT fall back to permanent deletion — user data must not be lost.
+            # Leave the file in place and log for manual resolution.
+            logger.error(
+                f"File left in place (trash unavailable): {rel_path}. "
+                "Resolve manually or ensure trash service is working."
+            )
     
     def _determine_sync_action(self, rel_path: str, local_info: Optional[Dict], 
                                remote_info: Optional[Dict], state_entry: Dict) -> str:
