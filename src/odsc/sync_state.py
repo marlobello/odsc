@@ -187,7 +187,7 @@ class SyncStateManager:
                     count += 1
         return count
 
-
+    def mark_file_not_downloaded(self, rel_path: str) -> None:
         """Set ``downloaded=False`` for *rel_path* (used by GUI on remove)."""
         with self._lock:
             self._ensure_initialized()

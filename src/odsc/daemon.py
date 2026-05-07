@@ -7,6 +7,7 @@ import os
 import time
 import signal
 import threading
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -19,6 +20,7 @@ from send2trash import send2trash
 
 from . import __version__
 from .config import Config
+from .error_handling import log_exception
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
 from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
@@ -149,6 +151,10 @@ class SyncDaemon:
         
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
+
+    def _log_operation_error(self, message: str, exc: BaseException, *, exc_info: bool = False) -> None:
+        """Log sync/runtime errors with warning for transient failures."""
+        log_exception(logger, message, exc, exc_info=exc_info)
     
     def initialize(self) -> bool:
         """Initialize OneDrive client and authentication.
@@ -241,7 +247,7 @@ class SyncDaemon:
                 while self._running:
                     time.sleep(1)
             except KeyboardInterrupt:
-                pass
+                logger.info("Keyboard interrupt received, shutting down daemon loop")
         
         # After loop exits, ensure clean shutdown
         self.stop()
@@ -369,8 +375,8 @@ class SyncDaemon:
         """Check GitHub for a newer ODSC release (at most once per 24 h).
 
         If a newer version is found, emits a desktop notification via
-        notify-send and logs at INFO level.  Errors are silently suppressed
-        so a network outage never interrupts the sync loop.
+        notify-send and logs at INFO level. Non-fatal errors are logged so a
+        network outage never interrupts the sync loop silently.
         """
         now = time.monotonic()
         if now - self._last_update_check < UPDATE_CHECK_INTERVAL:
@@ -402,10 +408,12 @@ class SyncDaemon:
                          "Run: bash install.sh  to upgrade."],
                         check=False, timeout=5,
                     )
-                except Exception:
-                    pass  # notify-send not available — log is enough
-        except Exception as e:
-            logger.debug(f"Update check failed (non-fatal): {e}")
+                except Exception as exc:
+                    logger.debug(f"Could not show update notification: {exc}")
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            logger.warning(f"Update check failed (non-fatal): {exc}")
+        except Exception as exc:
+            logger.error(f"Unexpected update-check failure: {exc}", exc_info=True)
 
 
     def _do_periodic_sync(self) -> None:
@@ -470,8 +478,8 @@ class SyncDaemon:
             
             self.state_mgr.delta_token = new_delta_token
             
-        except Exception as e:
-            logger.error(f"Failed to fetch changes: {e}", exc_info=True)
+        except Exception as exc:
+            self._log_operation_error("Failed to fetch changes", exc, exc_info=True)
             self.state_mgr.delta_token = None
             return None
         
@@ -616,8 +624,10 @@ class SyncDaemon:
             full_path = extract_item_path(item)
             validate_sync_path(full_path, sync_dir)
             self.state_mgr.set_cache_entry(full_path, item)
-        except (SecurityError, Exception) as e:
-            logger.warning(f"Skipping unsafe folder: {e}")
+        except SecurityError as exc:
+            logger.error(f"Skipping unsafe folder: {exc}")
+        except Exception as exc:
+            logger.error(f"Failed to process remote folder item: {exc}", exc_info=True)
     
     def _process_remote_file(self, item: Dict[str, Any], sync_dir: Path) -> Optional[Dict[str, Any]]:
         """Process a file from OneDrive delta.
@@ -641,11 +651,11 @@ class SyncDaemon:
             
             return {'path': full_path, 'metadata': metadata}
             
-        except SecurityError as e:
-            logger.warning(f"Skipping unsafe remote path: {e}")
+        except SecurityError as exc:
+            logger.error(f"Skipping unsafe remote path: {exc}")
             return None
-        except Exception as e:
-            logger.warning(f"Error processing remote item: {e}")
+        except Exception as exc:
+            logger.error(f"Error processing remote item: {exc}", exc_info=True)
             return None
     
     def _scan_local_filesystem(self, sync_dir: Path) -> tuple:
@@ -813,7 +823,7 @@ class SyncDaemon:
             metadata = self.client.upload_file(local_info['path'], rel_path)
             self.state_mgr.set_file_entry(rel_path, local_info['mtime'], local_info['size'], metadata)
         except Exception as upload_err:
-            logger.error(f"Upload failed for {rel_path}: {upload_err}")
+            self._log_operation_error(f"Upload failed for {rel_path}", upload_err)
             self.state_mgr.set_file_entry(rel_path, local_info['mtime'], local_info['size'], error=str(upload_err))
     
     def _download_file(self, rel_path: str, sync_dir: Path, remote_info: Dict) -> None:
@@ -831,7 +841,7 @@ class SyncDaemon:
                 mtime = 0.0
             self.state_mgr.set_file_entry(rel_path, mtime, remote_info['size'], remote_info)
         except Exception as download_err:
-            logger.error(f"Download failed for {rel_path}: {download_err}")
+            self._log_operation_error(f"Download failed for {rel_path}", download_err)
     
     def _recycle_remote_deleted_file(self, rel_path: str, sync_dir: Path) -> None:
         """Handle a file that was deleted remotely."""
@@ -919,8 +929,8 @@ class SyncDaemon:
                     metadata = self.client.create_folder(folder_path)
                     self.state_mgr.set_cache_entry(folder_path, metadata)
                     logger.info(f"Folder created on OneDrive: {folder_path}")
-                except Exception as e:
-                    logger.error(f"Failed to create folder {folder_path} on OneDrive: {e}")
+                except Exception as exc:
+                    self._log_operation_error(f"Failed to create folder {folder_path} on OneDrive", exc)
     
     def _create_missing_local_folders(self, sync_dir: Path, local_folders: Dict, 
                                      all_remote_folders: Dict) -> None:
@@ -1225,9 +1235,9 @@ class SyncDaemon:
             
             logger.info(f"Synced file: {rel_path}")
             
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Failed to sync {rel_path}: {error_msg}", exc_info=True)
+        except Exception as exc:
+            error_msg = str(exc)
+            self._log_operation_error(f"Failed to sync {rel_path}", exc, exc_info=True)
             
             # Track failed upload — use already-captured mtime/size if available,
             # otherwise fall back to zeros (file may have been deleted mid-upload)

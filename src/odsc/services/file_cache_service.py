@@ -33,7 +33,7 @@ class FileCacheService:
         file_cache = dict(existing_cache)  # Make a copy
         
         for item in changes:
-            if item.get('deleted'):
+            if 'deleted' in item:
                 # Handle deleted items
                 item_id = item['id']
                 for path in list(file_cache.keys()):
@@ -67,7 +67,7 @@ class FileCacheService:
         file_cache = {}
         
         for item in changes:
-            if not item.get('deleted'):
+            if 'deleted' not in item:
                 try:
                     full_path = FileCacheService._build_item_path(item)
                     file_cache[full_path] = item

@@ -15,8 +15,9 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 import certifi
-from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type, before_sleep_log
+from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception, before_sleep_log
 
+from .error_handling import get_http_status, get_log_level, is_transient_error
 from .path_utils import SecurityError
 
 
@@ -77,6 +78,34 @@ class OneDriveClient:
                      r'\1=***REDACTED***', text, flags=re.IGNORECASE)
         text = re.sub(r'Bearer\s+[\w\-\.]+', 'Bearer ***REDACTED***', text, flags=re.IGNORECASE)
         return text
+
+    def _log_request_exception(self, message: str, exc: BaseException, *, exc_info: bool = False) -> None:
+        """Log request exceptions with sanitized output and appropriate severity."""
+        level = get_log_level(exc)
+        logger.log(
+            level,
+            f"{message}: {self._sanitize_for_log(str(exc))}",
+            exc_info=exc_info and level >= logging.ERROR,
+        )
+
+    def _log_http_error(self, method: str, endpoint: str, exc: requests.exceptions.HTTPError) -> None:
+        """Log HTTP failures with transient/permanent severity."""
+        status = get_http_status(exc)
+        if status in (401, 403):
+            logger.error(
+                "Authentication/authorisation error %s for %s %s — token may be expired or revoked.",
+                status,
+                method,
+                endpoint,
+            )
+            return
+        if status == 404:
+            logger.error("Requested OneDrive item was not found for %s %s", method, endpoint)
+            return
+        if status is not None and status >= 500:
+            logger.warning("Transient server error %s for %s %s", status, method, endpoint)
+            return
+        logger.error("OneDrive request failed with HTTP %s for %s %s", status, method, endpoint)
     
     def get_auth_url(self, state: Optional[str] = None) -> str:
         """Get OAuth2 authorization URL with CSRF protection.
@@ -154,8 +183,11 @@ class OneDriveClient:
             logger.info("Successfully obtained access token")
             return self.token_data
             
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Token exchange request failed: {self._sanitize_for_log(str(e))}")
+        except requests.exceptions.HTTPError as exc:
+            self._log_http_error("POST", self.TOKEN_URL, exc)
+            raise
+        except requests.exceptions.RequestException as exc:
+            self._log_request_exception("Token exchange failed", exc)
             raise
     
     def refresh_token(self) -> Dict[str, Any]:
@@ -190,8 +222,11 @@ class OneDriveClient:
             logger.info("Successfully refreshed access token")
             return self.token_data
             
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Token refresh failed: {self._sanitize_for_log(str(e))}")
+        except requests.exceptions.HTTPError as exc:
+            self._log_http_error("POST", self.TOKEN_URL, exc)
+            raise
+        except requests.exceptions.RequestException as exc:
+            self._log_request_exception("Token refresh failed", exc)
             raise
     
     def _ensure_token(self) -> None:
@@ -229,27 +264,18 @@ class OneDriveClient:
         # Apply a default timeout so stalled transfers never block a worker
         # indefinitely. Callers may override by passing timeout= explicitly.
         kwargs.setdefault('timeout', (10, 300))  # (connect, read) seconds
-        
+
         url = f"{self.API_BASE}{endpoint}"
-        response = self._session.request(method, url, headers=headers, **kwargs)
-        
-        # Log auth errors differently from transient server errors so operators
-        # can tell at a glance whether they need to re-authenticate.
-        if not response.ok:
-            if response.status_code in (401, 403):
-                logger.error(
-                    f"Authentication/authorisation error {response.status_code} "
-                    f"for {method} {endpoint} — token may be expired or revoked. "
-                    f"Re-authenticate with `odsc auth`."
-                )
-            elif response.status_code >= 500:
-                logger.warning(
-                    f"Transient server error {response.status_code} "
-                    f"for {method} {endpoint} — will retry if decorated with @retry."
-                )
-        
-        response.raise_for_status()
-        return response
+        try:
+            response = self._session.request(method, url, headers=headers, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.HTTPError as exc:
+            self._log_http_error(method, endpoint, exc)
+            raise
+        except requests.exceptions.RequestException as exc:
+            self._log_request_exception(f"Request failed for {method} {endpoint}", exc)
+            raise
     
     def get_user_info(self) -> Dict[str, Any]:
         """Get user profile information.
@@ -334,9 +360,16 @@ class OneDriveClient:
         headers['Authorization'] = f"Bearer {self._access_token}"
         
         kwargs.setdefault('timeout', (10, 300))
-        response = self._session.request('GET', url, headers=headers, **kwargs)
-        response.raise_for_status()
-        return response
+        try:
+            response = self._session.request('GET', url, headers=headers, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.HTTPError as exc:
+            self._log_http_error('GET', parsed.path, exc)
+            raise
+        except requests.exceptions.RequestException as exc:
+            self._log_request_exception(f"Request failed for GET {parsed.path}", exc)
+            raise
     
     def get_delta(self, delta_token: Optional[str] = None) -> tuple[List[Dict[str, Any]], str]:
         """Get changes since last sync using delta query.
@@ -448,14 +481,16 @@ class OneDriveClient:
             endpoint = f"/me/drive/root:/{remote_path}"
             response = self._api_request('GET', endpoint)
             return response.json()
-        except Exception as e:
-            logger.debug(f"File not found on OneDrive: {remote_path}")
-            return None
+        except requests.exceptions.HTTPError as exc:
+            if get_http_status(exc) == 404:
+                logger.error("File not found on OneDrive: %s", remote_path)
+                return None
+            raise
     
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_random_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
+        retry=retry_if_exception(is_transient_error),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True
     )
@@ -511,7 +546,7 @@ class OneDriveClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_random_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
+        retry=retry_if_exception(is_transient_error),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True
     )
@@ -576,17 +611,20 @@ class OneDriveClient:
             metadata = response.json()
             logger.info(f"Created folder: {folder_path}")
             return metadata
-        except Exception as e:
-            # Check if folder already exists
-            if "already exists" in str(e).lower() or "name already exists" in str(e).lower():
-                logger.debug(f"Folder already exists: {folder_path}")
-                # Try to get existing folder metadata
+        except requests.exceptions.HTTPError as exc:
+            status = get_http_status(exc)
+            response_text = exc.response.text.lower() if exc.response is not None else ""
+            if status == 409 or "already exists" in response_text or "name already exists" in response_text:
+                logger.info(f"Folder already exists: {folder_path}")
                 try:
                     endpoint = f"/me/drive/root:/{folder_path}"
                     response = self._api_request('GET', endpoint)
                     return response.json()
-                except Exception as get_err:
-                    logger.warning(f"Could not get metadata for existing folder: {get_err}")
+                except requests.exceptions.RequestException as get_err:
+                    self._log_request_exception(
+                        f"Could not fetch existing folder metadata for {folder_path}",
+                        get_err,
+                    )
             raise
     
     def move_item(

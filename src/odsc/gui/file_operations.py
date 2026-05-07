@@ -9,6 +9,7 @@ import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib
 
+from ..error_handling import log_exception, user_friendly_error
 from ..path_utils import sanitize_onedrive_path, validate_sync_path, cleanup_empty_parent_dirs
 from ..sync_state import SyncStateManager
 from .dialogs import DialogHelper
@@ -200,9 +201,13 @@ class FileOperationsMixin:
                 GLib.idle_add(self._update_status, f"Removed local copy of {file_name}")
                 GLib.idle_add(self._load_remote_files)
                 
-            except Exception as e:
-                logger.error(f"Failed to remove local copy of {file_name}: {e}")
-                GLib.idle_add(self._show_error, "Remove Failed", f"Failed to remove: {e}")
+            except Exception as exc:
+                log_exception(logger, f"Failed to remove local copy of {file_name}", exc, exc_info=True)
+                GLib.idle_add(
+                    self._show_error,
+                    "Remove Failed",
+                    user_friendly_error("remove the local copy", exc, item_type="file"),
+                )
         
         thread = threading.Thread(target=remove_in_thread, daemon=True)
         thread.start()
@@ -234,8 +239,13 @@ class FileOperationsMixin:
                     not_downloaded_paths.append(rel_path)
                     logger.info(f"Removed local copy: {rel_path}")
                     success_count += 1
-                except Exception as e:
-                    logger.error(f"Failed to remove local copy of {file_name}: {e}", exc_info=True)
+                except Exception as exc:
+                    log_exception(
+                        logger,
+                        f"Failed to remove local copy of {file_name}",
+                        exc,
+                        exc_info=True,
+                    )
                     error_count += 1
 
             # Single atomic state update + save
@@ -244,8 +254,8 @@ class FileOperationsMixin:
                     for rel_path in not_downloaded_paths:
                         self._state_mgr.mark_file_not_downloaded(rel_path)
                     self._state_mgr.save()
-            except Exception as e:
-                logger.error(f"Failed to save state after batch remove: {e}")
+            except Exception as exc:
+                logger.error(f"Failed to save state after batch remove: {exc}", exc_info=True)
 
             if error_count > 0:
                 GLib.idle_add(
@@ -307,10 +317,13 @@ class FileOperationsMixin:
                 logger.info(f"Downloaded and marked for sync: {rel_path}")
                 GLib.idle_add(self._update_status, f"Downloaded {file_name}")
                 GLib.idle_add(self._load_remote_files)
-            except Exception as e:
-                error_msg = f"Failed to download {file_name}: {str(e)}"
-                logger.error(error_msg, exc_info=True)
-                GLib.idle_add(self._show_error, "Download Failed", error_msg)
+            except Exception as exc:
+                log_exception(logger, f"Failed to download {file_name}", exc, exc_info=True)
+                GLib.idle_add(
+                    self._show_error,
+                    "Download Failed",
+                    user_friendly_error("download the selected file", exc, item_type="file"),
+                )
                 GLib.idle_add(self._update_status, f"Download failed: {file_name}")
         
         thread = threading.Thread(target=download_in_thread, daemon=True)
@@ -368,8 +381,8 @@ class FileOperationsMixin:
                         state_updates[rel_path] = state_entry
                         logger.info(f"Downloaded and marked for sync: {rel_path}")
                         success_count += 1
-                    except Exception as e:
-                        logger.error(f"Failed to download {file_name}: {e}", exc_info=True)
+                    except Exception as exc:
+                        log_exception(logger, f"Failed to download {file_name}", exc, exc_info=True)
                         error_count += 1
             
             try:
@@ -377,8 +390,8 @@ class FileOperationsMixin:
                     self._state_mgr.patch_file_entries(state_updates)
                     self._state_mgr.save()
                 logger.info(f"Batch download complete: {success_count} succeeded, {error_count} failed")
-            except Exception as e:
-                logger.error(f"Failed to save state after batch download: {e}")
+            except Exception as exc:
+                logger.error(f"Failed to save state after batch download: {exc}", exc_info=True)
             
             if error_count > 0:
                 GLib.idle_add(

@@ -55,15 +55,19 @@ class SqliteStateBackend(StateBackend):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Connect to database
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row  # Dict-like row access
-        
-        # Performance optimizations
-        self.conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for concurrent reads
-        self.conn.execute("PRAGMA busy_timeout=5000")  # Wait briefly for cross-process writers
-        self.conn.execute("PRAGMA synchronous=NORMAL")  # Balance safety/performance
-        self.conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
-        self.conn.execute("PRAGMA temp_store=MEMORY")  # Use memory for temp tables
+        try:
+            self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row  # Dict-like row access
+            
+            # Performance optimizations
+            self.conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for concurrent reads
+            self.conn.execute("PRAGMA busy_timeout=5000")  # Wait briefly for cross-process writers
+            self.conn.execute("PRAGMA synchronous=NORMAL")  # Balance safety/performance
+            self.conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+            self.conn.execute("PRAGMA temp_store=MEMORY")  # Use memory for temp tables
+        except sqlite3.Error as exc:
+            logger.error(f"Failed to connect SQLite backend {self.db_path}: {exc}", exc_info=True)
+            raise
         
         logger.info(f"SQLite backend connected: {self.db_path}")
     
@@ -153,12 +157,16 @@ class SqliteStateBackend(StateBackend):
         Note: This loads everything into memory (slow). Use specific
         methods (get_file_cache, get_sync_state) for better performance.
         """
-        return {
-            'file_cache': self.get_all_file_cache(),
-            'files': self.get_all_sync_state(),
-            'delta_token': self.get_metadata('delta_token') or '',
-            'last_sync': self.get_metadata('last_sync') or ''
-        }
+        try:
+            return {
+                'file_cache': self.get_all_file_cache(),
+                'files': self.get_all_sync_state(),
+                'delta_token': self.get_metadata('delta_token') or '',
+                'last_sync': self.get_metadata('last_sync') or ''
+            }
+        except sqlite3.Error as exc:
+            logger.error(f"Failed to load state from SQLite backend {self.db_path}: {exc}", exc_info=True)
+            raise
     
     def save(self, state: Dict[str, Any]) -> None:
         """Save complete state from dictionary.
@@ -166,31 +174,35 @@ class SqliteStateBackend(StateBackend):
         Note: This is slow for large states. Use specific methods
         (set_file_cache, set_sync_state) for better performance.
         """
-        with self._write_lock:
-            with self.conn:
-                # Clear existing data
-                self.conn.execute("DELETE FROM file_cache")
-                self.conn.execute("DELETE FROM sync_state")
-                
-                # Insert file_cache
-                file_cache = state.get('file_cache', {})
-                if file_cache:
-                    self._batch_insert_cache_unlocked(file_cache)
-                
-                # Insert sync_state
-                sync_state = state.get('files', {})
-                if sync_state:
-                    self._batch_insert_sync_state_unlocked(sync_state)
-                
-                # Insert metadata
-                self.conn.execute("""
-                    INSERT OR REPLACE INTO metadata (key, value) 
-                    VALUES (?, ?)
-                """, ('delta_token', state.get('delta_token', '')))
-                self.conn.execute("""
-                    INSERT OR REPLACE INTO metadata (key, value) 
-                    VALUES (?, ?)
-                """, ('last_sync', state.get('last_sync', '')))
+        try:
+            with self._write_lock:
+                with self.conn:
+                    # Clear existing data
+                    self.conn.execute("DELETE FROM file_cache")
+                    self.conn.execute("DELETE FROM sync_state")
+                    
+                    # Insert file_cache
+                    file_cache = state.get('file_cache', {})
+                    if file_cache:
+                        self._batch_insert_cache_unlocked(file_cache)
+                    
+                    # Insert sync_state
+                    sync_state = state.get('files', {})
+                    if sync_state:
+                        self._batch_insert_sync_state_unlocked(sync_state)
+                    
+                    # Insert metadata
+                    self.conn.execute("""
+                        INSERT OR REPLACE INTO metadata (key, value) 
+                        VALUES (?, ?)
+                    """, ('delta_token', state.get('delta_token', '')))
+                    self.conn.execute("""
+                        INSERT OR REPLACE INTO metadata (key, value) 
+                        VALUES (?, ?)
+                    """, ('last_sync', state.get('last_sync', '')))
+        except sqlite3.Error as exc:
+            logger.error(f"Failed to save state to SQLite backend {self.db_path}: {exc}", exc_info=True)
+            raise
     
     def get_file_cache(self, path: str) -> Optional[Dict]:
         """Get single file's cache entry."""
@@ -217,7 +229,7 @@ class SqliteStateBackend(StateBackend):
                     data.get('size'),
                     data.get('mtime_remote'),
                     data.get('eTag') or data.get('etag'),
-                    1 if (data.get('folder') or data.get('is_folder')) else 0,
+                    1 if ('folder' in data or data.get('is_folder')) else 0,
                     data.get('parent_id') or data.get('parentReference', {}).get('id'),
                     data.get('createdDateTime') or data.get('created_at'),
                     data.get('lastModifiedDateTime') or data.get('modified_at')
@@ -287,8 +299,13 @@ class SqliteStateBackend(StateBackend):
     def close(self) -> None:
         """Close database connection."""
         if self.conn:
-            self.conn.close()
-            self.conn = None
+            try:
+                self.conn.close()
+            except sqlite3.Error as exc:
+                logger.error(f"Failed to close SQLite backend {self.db_path}: {exc}", exc_info=True)
+                raise
+            finally:
+                self.conn = None
             logger.info("SQLite backend closed")
     
     def _batch_insert_cache(self, items: Dict[str, Dict]) -> None:
@@ -306,7 +323,7 @@ class SqliteStateBackend(StateBackend):
                 item.get('size'),
                 item.get('mtime_remote'),
                 item.get('eTag') or item.get('etag'),
-                1 if (item.get('folder') or item.get('is_folder')) else 0,
+                1 if ('folder' in item or item.get('is_folder')) else 0,
                 item.get('parent_id') or item.get('parentReference', {}).get('id'),
                 item.get('createdDateTime') or item.get('created_at'),
                 item.get('lastModifiedDateTime') or item.get('modified_at')

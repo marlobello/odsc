@@ -13,6 +13,7 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, GLib, GdkPixbuf
 
 from ..config import Config
+from ..error_handling import log_exception, user_friendly_error
 from ..onedrive_client import OneDriveClient
 from ..logging_config import setup_logging
 from ..path_utils import sanitize_onedrive_path, validate_sync_path, SecurityError
@@ -459,7 +460,12 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                 "The ODSC daemon has been restarted successfully.\nYour new settings are now active.",
             )
         else:
-            self._show_error(f"Failed to restart daemon:\n{msg}")
+            logger.error(f"Failed to restart daemon: {msg}")
+            self._show_error(
+                "Failed to Restart Service",
+                "Could not restart the background sync service. "
+                "Please try again or restart it manually.",
+            )
 
     def _start_daemon(self) -> None:
         """Start the ODSC daemon."""
@@ -471,7 +477,12 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                 "The ODSC daemon has been started successfully.\nYour settings are now active.",
             )
         else:
-            self._show_error(f"Failed to start daemon:\n{msg}")
+            logger.error(f"Failed to start daemon: {msg}")
+            self._show_error(
+                "Failed to Start Service",
+                "Could not start the background sync service. "
+                "Please try again or start it manually.",
+            )
 
     def _check_service_status(self) -> bool:
         """Check if the ODSC service is running; show info bar if not.
@@ -540,10 +551,11 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                 "Background synchronization is now active.",
             )
         else:
+            logger.error(f"Failed to start service from notification: {msg}")
             DialogHelper.show_error(
                 self,
                 "Failed to Start Service",
-                f"Could not start the OneDrive Sync service:\n\n{msg}\n\n"
+                "Could not start the OneDrive Sync service.\n\n"
                 "You can start it manually with:\n  systemctl --user start odsc.service",
             )
     
@@ -611,9 +623,13 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                 GLib.idle_add(self._update_file_list, files)
                 GLib.idle_add(self._update_status, f"Loaded {len(files)} items")
                 
-            except Exception as e:
-                logger.error(f"Failed to load files: {e}", exc_info=True)
-                GLib.idle_add(self._show_error, "Failed to load files", str(e))
+            except Exception as exc:
+                log_exception(logger, "Failed to load files", exc, exc_info=True)
+                GLib.idle_add(
+                    self._show_error,
+                    "Failed to Load Files",
+                    user_friendly_error("load files from OneDrive", exc, item_type="file list"),
+                )
                 GLib.idle_add(self._update_status, "Failed to load files")
         
         thread = threading.Thread(target=load_in_thread, daemon=True)
