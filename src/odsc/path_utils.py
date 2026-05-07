@@ -24,6 +24,9 @@ def extract_item_path(item: Dict[str, Any]) -> str:
     """
     parent_path = item.get('parentReference', {}).get('path', '')
     name = item.get('name', '')
+
+    if any(sep in name for sep in ('/', '\\')) or '\x00' in name:
+        raise SecurityError(f"Invalid OneDrive item name contains path separator or null byte: {name!r}")
     
     if parent_path:
         safe_parent = sanitize_onedrive_path(parent_path)
@@ -53,20 +56,17 @@ def sanitize_onedrive_path(raw_path: str) -> str:
     if not path:
         return ''
     
-    # Use pathlib to properly handle path components
-    parts = Path(path).parts
-    
-    # Filter out dangerous components
+    # Normalize separators before inspecting components without collapsing dot segments
+    parts = path.replace('\\', '/').split('/')
+
     safe_parts = []
     for part in parts:
-        # Block path traversal and special names
-        if part in ('..', '.', '/', '\\', ''):
-            logger.warning(f"Blocked dangerous path component: {part}")
-            continue
-        # Block absolute paths
+        if part in ('..', '.'):
+            raise SecurityError(f"Invalid OneDrive path contains forbidden component {part!r}: {raw_path!r}")
+        if part in ('/', '\\', ''):
+            raise SecurityError(f"Invalid OneDrive path contains empty or separator-only component: {raw_path!r}")
         if part.startswith('/') or part.startswith('\\'):
-            logger.warning(f"Blocked absolute path component: {part}")
-            continue
+            raise SecurityError(f"Invalid OneDrive path contains absolute component {part!r}: {raw_path!r}")
         safe_parts.append(part)
     
     if not safe_parts:
@@ -88,28 +88,31 @@ def validate_sync_path(rel_path: str, sync_dir: Path) -> Path:
     Raises:
         SecurityError: If path validation fails
     """
-    # Convert to absolute path
-    full_path = (sync_dir / rel_path).resolve()
     sync_dir_resolved = sync_dir.resolve()
+    sync_dir_abs = sync_dir if sync_dir.is_absolute() else (Path.cwd() / sync_dir)
+    full_path = sync_dir_abs / rel_path
+
+    if Path(rel_path).is_absolute():
+        raise SecurityError(f"Absolute paths are not allowed for sync operations: {rel_path}")
+
+    # Check for symlinks before resolving the path.
+    check_path = full_path
+    while check_path != sync_dir_abs:
+        if check_path.is_symlink():
+            raise SecurityError(f"Symlink detected in sync path before resolution: {rel_path}")
+        if check_path == check_path.parent:
+            raise SecurityError(f"Path validation failed before reaching sync root: {rel_path}")
+        check_path = check_path.parent
+
+    resolved_path = full_path.resolve()
     
     # Check it's within sync directory
     try:
-        full_path.relative_to(sync_dir_resolved)
+        resolved_path.relative_to(sync_dir_resolved)
     except ValueError:
-        raise SecurityError(f"Path traversal detected: {rel_path}")
-    
-    # Check for symlinks in the path (don't follow them)
-    # Start from full_path and work backwards to sync_dir
-    check_path = full_path
-    while check_path != sync_dir_resolved:
-        if check_path.is_symlink():
-            raise SecurityError(f"Symlink detected in path: {rel_path}")
-        if check_path == check_path.parent:
-            # Reached root without finding sync_dir - security issue
-            raise SecurityError(f"Path validation failed - reached filesystem root: {rel_path}")
-        check_path = check_path.parent
-    
-    return full_path
+        raise SecurityError(f"Resolved path escapes sync directory: {rel_path}")
+
+    return resolved_path
 
 
 def cleanup_empty_parent_dirs(file_path: Path, sync_dir: Path) -> None:
@@ -124,6 +127,13 @@ def cleanup_empty_parent_dirs(file_path: Path, sync_dir: Path) -> None:
         sync_dir_resolved = sync_dir.resolve()
         
         while parent != sync_dir_resolved and parent.exists():
+            try:
+                parent.resolve().relative_to(sync_dir_resolved)
+            except ValueError as e:
+                raise SecurityError(
+                    f"Refusing to clean up directory outside sync root: {parent}"
+                ) from e
+
             # Check if directory is empty
             if not any(parent.iterdir()):
                 logger.info(f"Removing empty directory: {parent.relative_to(sync_dir_resolved)}")
