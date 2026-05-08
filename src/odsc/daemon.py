@@ -417,7 +417,10 @@ class SyncDaemon:
             if not latest:
                 return
 
-            if latest != __version__:
+            installed_parts = [int(x) for x in __version__.split(".")]
+            latest_parts = [int(x) for x in latest.split(".")]
+
+            if latest_parts > installed_parts:
                 msg = f"ODSC update available: v{latest} (installed: v{__version__})"
                 logger.info(msg)
                 try:

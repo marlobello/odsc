@@ -210,12 +210,15 @@ def cmd_update(args):
             print("Could not determine latest version.")
             return 1
 
-        if latest == __version__:
-            print(f"✓ You are running the latest version ({__version__}).")
-        else:
+        installed_parts = [int(x) for x in __version__.split(".")]
+        latest_parts = [int(x) for x in latest.split(".")]
+
+        if latest_parts > installed_parts:
             print(f"⬆  Update available: v{latest}")
             print("To upgrade, run:")
             print("  curl -fsSL https://github.com/marlobello/odsc/releases/latest/download/install.sh | bash")
+        else:
+            print(f"✓ You are running the latest version ({__version__}).")
     except Exception as e:
         print(f"Error checking for updates: {e}")
         return 1
