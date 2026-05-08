@@ -222,7 +222,8 @@ class SyncDaemon:
         
         # Start command socket for IPC (force-sync, etc.)
         self._command_server = CommandServer(
-            self.config.config_dir, self._on_force_sync_requested
+            self.config.config_dir, self._on_force_sync_requested,
+            version=__version__
         )
         self._command_server.start()
 

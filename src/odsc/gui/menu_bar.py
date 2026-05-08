@@ -241,8 +241,26 @@ class MenuBarMixin:
     def _on_about_clicked(self, widget) -> None:
         """Handle About menu item click."""
         try:
+            from .. import __version__
+            from ..command_socket import send_command
             from .splash import SplashScreen
-            splash = SplashScreen(show_close_button=True)
+
+            gui_version = __version__
+
+            # Try to get daemon version via command socket
+            daemon_version = None
+            try:
+                response = send_command(self.config.config_dir, "VERSION")
+                if response.startswith("OK "):
+                    daemon_version = response[3:].strip()
+            except Exception:
+                pass
+
+            splash = SplashScreen(
+                show_close_button=True,
+                gui_version=gui_version,
+                daemon_version=daemon_version,
+            )
             splash.set_transient_for(self)
             splash.set_modal(True)
             splash.show_all()

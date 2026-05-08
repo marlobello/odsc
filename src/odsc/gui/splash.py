@@ -16,11 +16,14 @@ logger = logging.getLogger(__name__)
 class SplashScreen(Gtk.Window):
     """Splash screen / About dialog for ODSC."""
     
-    def __init__(self, show_close_button=False):
+    def __init__(self, show_close_button=False, gui_version=None,
+                 daemon_version=None):
         """Initialize splash screen.
         
         Args:
             show_close_button: If True, show close button (for About dialog mode)
+            gui_version: GUI package version string
+            daemon_version: Daemon version string, or None if unavailable
         """
         # Use TOPLEVEL window that can be modal and transient
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
@@ -65,6 +68,19 @@ class SplashScreen(Gtk.Window):
         subtitle_label.set_halign(Gtk.Align.CENTER)
         subtitle_label.set_line_wrap(True)
         vbox.pack_start(subtitle_label, False, False, 0)
+        
+        # Add version info (only in About dialog mode)
+        if show_close_button and gui_version:
+            version_label = Gtk.Label()
+            if daemon_version and daemon_version != gui_version:
+                version_text = (f'GUI: {gui_version}  •  Daemon: {daemon_version}')
+            else:
+                version_text = f'Version {gui_version}'
+            version_label.set_markup(
+                f'<span size="small" foreground="#888888">{version_text}</span>'
+            )
+            version_label.set_halign(Gtk.Align.CENTER)
+            vbox.pack_start(version_label, False, False, 0)
         
         # Add loading dots (only visible in splash mode, not About dialog)
         if not show_close_button:

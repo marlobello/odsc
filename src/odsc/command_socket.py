@@ -5,7 +5,8 @@ ownership-verified Unix socket. The daemon listens; the GUI (or CLI)
 connects and sends single-line commands.
 
 Supported commands:
-  SYNC   — trigger an immediate full sync
+  SYNC    — trigger an immediate full sync
+  VERSION — return the daemon's version string
 """
 
 import logging
@@ -28,9 +29,11 @@ def socket_path(config_dir: Path) -> Path:
 class CommandServer:
     """Listens on a Unix socket for commands from the GUI/CLI."""
 
-    def __init__(self, config_dir: Path, on_sync_requested: callable):
+    def __init__(self, config_dir: Path, on_sync_requested: callable,
+                 version: str = "unknown"):
         self._sock_path = socket_path(config_dir)
         self._on_sync = on_sync_requested
+        self._version = version
         self._server: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._running = False
@@ -96,6 +99,8 @@ class CommandServer:
             except Exception as e:
                 logger.error(f"Error handling SYNC command: {e}")
                 return f"ERR {e}\n"
+        elif command == "VERSION":
+            return f"OK {self._version}\n"
         else:
             logger.warning(f"Unknown command received: {command!r}")
             return "ERR unknown command\n"
