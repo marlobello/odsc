@@ -97,6 +97,8 @@ def test_start_falls_back_to_headless_when_tray_setup_fails(monkeypatch, config)
     monkeypatch.setattr(daemon_module, "CommandServer", lambda *a, **kw: Mock())
     monkeypatch.setattr(daemon_module.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(daemon_module, "SYSTEM_TRAY_AVAILABLE", True)
+    if not hasattr(daemon_module, "SystemTrayIndicator"):
+        monkeypatch.setattr(daemon_module, "SystemTrayIndicator", None, raising=False)
     monkeypatch.setattr(
         daemon_module,
         "SystemTrayIndicator",
