@@ -195,7 +195,10 @@ def cmd_list(args):
 
 
 def cmd_update(args):
-    """Check for available updates."""
+    """Check for available updates and apply them."""
+    import subprocess
+    import tempfile
+
     print(f"Installed version: {__version__}")
     print("Checking for updates...")
     try:
@@ -215,8 +218,18 @@ def cmd_update(args):
 
         if latest_parts > installed_parts:
             print(f"⬆  Update available: v{latest}")
-            print("To upgrade, run:")
-            print("  curl -fsSL https://github.com/marlobello/odsc/releases/latest/download/install.sh | bash")
+            print("Downloading and installing update...")
+            install_url = f"https://github.com/marlobello/odsc/releases/download/v{latest}/install.sh"
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as tmp:
+                tmp_path = tmp.name
+                req = urllib.request.Request(install_url, headers={"User-Agent": f"odsc/{__version__}"})
+                with urllib.request.urlopen(req, timeout=30) as dl:
+                    tmp.write(dl.read().decode("utf-8"))
+            try:
+                result = subprocess.run(["bash", tmp_path], check=False)
+                return result.returncode
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
         else:
             print(f"✓ You are running the latest version ({__version__}).")
     except Exception as e:
