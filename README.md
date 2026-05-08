@@ -42,7 +42,7 @@ curl -fsSL https://github.com/marlobello/odsc/releases/latest/download/install.s
 bash install.sh
 ```
 
-> **Upgrading?** Just re-run the same command. The installer detects and upgrades your existing installation.
+> **Upgrading?** Run `odsc update` to automatically download and install the latest version.
 
 The install script will:
 1. ✅ Check Python version (requires 3.8+)
@@ -244,6 +244,7 @@ odsc-gui            # Launch GUI application
 odsc-daemon         # Run sync daemon (if not using systemd)
 odsc auth           # Authenticate from command line
 odsc status         # View sync status
+odsc update         # Check for and install updates
 odsc-reset-local    # Reset local state (ADVANCED - see Troubleshooting)
 ```
 

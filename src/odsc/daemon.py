@@ -428,7 +428,7 @@ class SyncDaemon:
                     subprocess.run(
                         ["notify-send", "--app-name=ODSC", "ODSC Update Available",
                          f"Version {latest} is available.\n"
-                         "Run: bash install.sh  to upgrade."],
+                         "Run: odsc update"],
                         check=False, timeout=5,
                     )
                 except Exception as exc:

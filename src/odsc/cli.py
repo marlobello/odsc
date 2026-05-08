@@ -267,7 +267,7 @@ def main():
     list_parser.set_defaults(func=cmd_list)
 
     # Update command
-    update_parser = subparsers.add_parser('update', help='Check for available updates')
+    update_parser = subparsers.add_parser('update', help='Check for and install updates')
     update_parser.set_defaults(func=cmd_update)
 
     args = parser.parse_args()
