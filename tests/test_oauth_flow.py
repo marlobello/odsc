@@ -134,11 +134,21 @@ def test_cmd_auth_clears_stale_handler_state_before_waiting(monkeypatch, capsys)
         def handle_request(self):
             return None
 
+    call_count = [0]
+    base_time = __import__('time').time()
+    def fake_time():
+        # First call sets the deadline; subsequent calls exceed it
+        call_count[0] += 1
+        if call_count[0] <= 1:
+            return base_time
+        return base_time + 400
+
     monkeypatch.setattr(cli, "Config", FakeConfig)
     monkeypatch.setattr(cli, "OneDriveClient", FakeClient)
     monkeypatch.setattr(cli.socketserver, "TCPServer", FakeServer)
     monkeypatch.setattr(cli.webbrowser, "open", lambda url: True)
     monkeypatch.setattr(cli.secrets, "token_urlsafe", lambda _: "expected-state")
+    monkeypatch.setattr(cli.time, "time", fake_time)
 
     result = cli.cmd_auth(SimpleNamespace(client_id=None))
 

@@ -125,17 +125,27 @@ class MenuBarMixin:
         expected_state = secrets.token_urlsafe(32)
         auth_url = temp_client.get_auth_url(expected_state)
         
-        logger.info(f"Opening browser for authentication")
-        webbrowser.open(auth_url)
+        # Event to signal when the callback server is ready to accept connections.
+        # Set to True only on successful bind; remains False on error.
+        server_ready = threading.Event()
+        server_failed = threading.Event()
         
         def wait_for_callback():
             try:
+                import time
                 logger.info("Starting local callback server on localhost:8080")
                 AuthCallbackHandler.reset()
-                with socketserver.TCPServer(("127.0.0.1", 8080), AuthCallbackHandler) as httpd:
-                    httpd.timeout = 300
+
+                class _ReuseServer(socketserver.TCPServer):
+                    allow_reuse_address = True
+
+                with _ReuseServer(("127.0.0.1", 8080), AuthCallbackHandler) as httpd:
+                    server_ready.set()
                     logger.debug("Waiting for OAuth callback...")
-                    httpd.handle_request()
+                    deadline = time.time() + 300
+                    httpd.timeout = 10
+                    while AuthCallbackHandler.auth_code is None and time.time() < deadline:
+                        httpd.handle_request()
 
                     auth_code = AuthCallbackHandler.auth_code
                     received_state = AuthCallbackHandler.state
@@ -169,6 +179,7 @@ class MenuBarMixin:
                         logger.warning("No authorization code received in callback")
             except OSError as e:
                 logger.error(f"Socket error: {e}", exc_info=True)
+                server_failed.set()
                 if e.errno == 98:
                     GLib.idle_add(self._show_error, "Port 8080 is already in use. Please close other applications using this port.")
                 else:
@@ -176,6 +187,15 @@ class MenuBarMixin:
         
         thread = threading.Thread(target=wait_for_callback, daemon=True)
         thread.start()
+        
+        # Wait for server to be listening before opening the browser
+        server_ready.wait(timeout=5)
+        
+        if server_failed.is_set():
+            return
+        
+        logger.info("Opening browser for authentication")
+        webbrowser.open(auth_url)
         
         self._update_status("Waiting for authentication...")
         logger.info("Authentication flow initiated, waiting for user...")

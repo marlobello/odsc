@@ -4,6 +4,7 @@
 import argparse
 import json
 import secrets
+import time
 import urllib.request
 import socketserver
 import sys
@@ -41,9 +42,12 @@ def cmd_auth(args):
     print("Waiting for authentication...")
     try:
         AuthCallbackHandler.reset()
+        socketserver.TCPServer.allow_reuse_address = True
         with socketserver.TCPServer(("127.0.0.1", 8080), AuthCallbackHandler) as httpd:
-            httpd.timeout = 300  # 5 minute timeout
-            httpd.handle_request()
+            deadline = time.time() + 300
+            httpd.timeout = 10
+            while AuthCallbackHandler.auth_code is None and time.time() < deadline:
+                httpd.handle_request()
     except OSError as e:
         if e.errno == 98:  # Address already in use
             print(f"✗ Port 8080 is already in use. Please close other applications using this port.")
