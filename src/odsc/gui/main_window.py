@@ -938,7 +938,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         return True  # keep timer running
 
     def _on_conflict_button_clicked(self, widget) -> None:
-        """Show dialog listing unresolved conflicts."""
+        """Show conflict resolution dialog."""
         state = self.config.load_state() or {}
         conflicts = state.get("conflicts", {})
 
@@ -946,24 +946,27 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
             DialogHelper.show_info(self, "No Conflicts", "All conflicts have been resolved.")
             return
 
-        lines = []
-        for original, info in conflicts.items():
-            conflict_path = info.get("conflict_path", "?")
-            detected = info.get("detected_at", "unknown")
-            lines.append(f"<b>{html.escape(original)}</b>")
-            lines.append(f"  Remote copy: {html.escape(conflict_path)}")
-            lines.append(f"  Detected: {html.escape(detected)}")
-            lines.append("")
+        from .conflict_dialog import ConflictResolutionDialog
 
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            modal=True,
-            message_type=Gtk.MessageType.WARNING,
-            buttons=Gtk.ButtonsType.CLOSE,
-            text=f"{len(conflicts)} Unresolved Conflict{'s' if len(conflicts) != 1 else ''}",
-        )
-        dialog.format_secondary_markup(
-            "\n".join(lines) + "\nTo resolve: keep the version you want and delete the .conflict file."
+        dialog = ConflictResolutionDialog(
+            self, self.config.sync_directory, conflicts
         )
         dialog.run()
+        results = dialog.results
         dialog.destroy()
+
+        # Clear resolved conflicts from state
+        resolved = [
+            path for path, action in results.items()
+            if action in (ConflictResolutionDialog.KEEP_LOCAL,
+                          ConflictResolutionDialog.KEEP_REMOTE)
+        ]
+        if resolved:
+            state = self.config.load_state() or {}
+            state_conflicts = state.get("conflicts", {})
+            for path in resolved:
+                state_conflicts.pop(path, None)
+            self.config.save_state(state)
+
+        # Refresh conflict indicator
+        self._check_conflicts()

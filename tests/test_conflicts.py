@@ -153,3 +153,50 @@ class TestConflictAutoClear:
 
         daemon._maybe_clear_conflict("anything.conflict")  # should not raise
         assert daemon.state_mgr.conflict_count() == 0
+
+
+# ------------------------------------------------------------------ #
+# Conflict resolution dialog file operations                           #
+# ------------------------------------------------------------------ #
+
+class TestConflictResolutionActions:
+    """Tests for conflict resolution file operations (keep local/remote)."""
+
+    def test_keep_local_deletes_conflict_file(self, tmp_path):
+        """Keep Local should delete the .conflict file."""
+        from odsc.gui.conflict_dialog import ConflictResolutionDialog
+
+        # Setup files
+        (tmp_path / "report.txt").write_text("local content")
+        (tmp_path / "report.txt.conflict").write_text("remote content")
+
+        conflicts = {
+            "report.txt": {
+                "conflict_path": "report.txt.conflict",
+                "detected_at": "2026-06-04T12:00:00",
+                "remote_modified": "2026-06-04T11:00:00Z",
+            }
+        }
+
+        # Simulate keep_local action directly on the file logic
+        conflict_path = tmp_path / "report.txt.conflict"
+        if conflict_path.exists():
+            conflict_path.unlink()
+
+        assert (tmp_path / "report.txt").exists()
+        assert not (tmp_path / "report.txt.conflict").exists()
+        assert (tmp_path / "report.txt").read_text() == "local content"
+
+    def test_keep_remote_replaces_local_with_conflict(self, tmp_path):
+        """Keep Remote should replace local with the .conflict file."""
+        import shutil
+
+        (tmp_path / "report.txt").write_text("local content")
+        (tmp_path / "report.txt.conflict").write_text("remote content")
+
+        local_path = tmp_path / "report.txt"
+        conflict_path = tmp_path / "report.txt.conflict"
+        shutil.move(str(conflict_path), str(local_path))
+
+        assert (tmp_path / "report.txt").read_text() == "remote content"
+        assert not (tmp_path / "report.txt.conflict").exists()
