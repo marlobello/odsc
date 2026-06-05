@@ -525,3 +525,17 @@ def test_no_move_when_old_path_still_present_locally(daemon):
     daemon._detect_and_apply_moves(sync_dir, local_files)
 
     assert moves == []  # orig still present -> it's a copy, not a move
+
+
+def test_remote_folder_cached_with_is_folder_flag(daemon):
+    """A folder from the delta must be cached as a folder so the SAME cycle's
+    folder reconciliation does not mistake it for a remote deletion."""
+    item = {
+        "id": "fid", "name": "_odsc_selftest", "folder": {},
+        "parentReference": {"path": "/drive/root:"},
+    }
+    daemon._process_remote_folder(item, daemon.config.sync_directory)
+
+    folders = daemon.state_mgr.all_remote_folders()
+    assert "_odsc_selftest" in folders  # would be EXCLUDED before the fix
+    assert daemon.state_mgr.get_cache_entry("_odsc_selftest") is not None

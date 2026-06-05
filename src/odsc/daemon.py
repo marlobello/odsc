@@ -657,7 +657,12 @@ class SyncDaemon:
             
             full_path = extract_item_path(item)
             validate_sync_path(full_path, sync_dir)
-            self.state_mgr.set_cache_entry(full_path, item)
+            # Normalize with is_folder=True (mirrors _process_remote_file). Without
+            # this, a folder first seen in the CURRENT delta cycle is absent from
+            # all_remote_folders() (which filters on is_folder) until the next
+            # reload, causing _delete_folders_removed_from_remote to wrongly trash
+            # the matching local folder.
+            self.state_mgr.set_cache_entry(full_path, {**item, 'is_folder': True})
         except SecurityError as exc:
             logger.error(f"Skipping unsafe folder: {exc}")
         except Exception as exc:
