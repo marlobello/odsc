@@ -360,3 +360,7 @@ class SyncStateManager:
             self._state["file_cache"] = {}
         if "conflicts" not in self._state:
             self._state["conflicts"] = {}
+        if "_deletion_failures" not in self._state:
+            self._state["_deletion_failures"] = {}
+        if "tombstones" not in self._state:
+            self._state["tombstones"] = {}

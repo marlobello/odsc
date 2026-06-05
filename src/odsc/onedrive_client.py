@@ -21,9 +21,15 @@ from tenacity.wait import wait_base
 
 from .error_handling import get_http_status, is_transient_error, log_exception
 from .path_utils import SecurityError
+from .quickxorhash import extract_quickxorhash, quickxorhash_file
 
 
 logger = logging.getLogger(__name__)
+
+
+class IntegrityVerificationError(requests.exceptions.ConnectionError):
+    """Raised when transferred bytes do not match OneDrive's content hash."""
+
 
 RETRY_AFTER_STATUS_CODES = {429, 503}
 MAX_RETRY_AFTER_SECONDS = 300
@@ -185,6 +191,66 @@ class OneDriveClient:
             logger.warning("Transient server error %s for %s %s", status, method, endpoint)
             return
         logger.error("OneDrive request failed with HTTP %s for %s %s", status, method, endpoint)
+
+    def _verify_download_integrity(
+        self, metadata: Dict[str, Any], local_path: Path, remote_id: str
+    ) -> None:
+        """Fail the download when OneDrive's hash and the local bytes differ."""
+        remote_hash = extract_quickxorhash(metadata)
+        if not remote_hash:
+            return
+
+        try:
+            local_hash = quickxorhash_file(local_path)
+        except OSError as exc:
+            logger.error(
+                "Could not hash downloaded file %s for integrity verification; rejecting transfer",
+                local_path,
+                exc_info=True,
+            )
+            raise IntegrityVerificationError(
+                f"Could not verify downloaded file {remote_id}: {exc}"
+            ) from exc
+
+        if local_hash != remote_hash:
+            logger.error(
+                "QuickXorHash mismatch after download for %s: local=%s remote=%s",
+                remote_id,
+                local_hash,
+                remote_hash,
+            )
+            raise IntegrityVerificationError(
+                f"QuickXorHash mismatch after downloading OneDrive item {remote_id}"
+            )
+
+    def _verify_upload_integrity(
+        self, metadata: Dict[str, Any], local_path: Path, remote_path: str
+    ) -> None:
+        """Fail the upload when OneDrive reports a different content hash."""
+        remote_hash = extract_quickxorhash(metadata)
+        if not remote_hash:
+            return
+
+        try:
+            local_hash = quickxorhash_file(local_path)
+        except OSError:
+            logger.warning(
+                "Could not hash local upload %s for integrity verification; skipping check",
+                local_path,
+                exc_info=True,
+            )
+            return
+
+        if local_hash != remote_hash:
+            logger.error(
+                "QuickXorHash mismatch after upload for %s: local=%s remote=%s",
+                remote_path,
+                local_hash,
+                remote_hash,
+            )
+            raise IntegrityVerificationError(
+                f"QuickXorHash mismatch after uploading {remote_path}"
+            )
     
     def get_auth_url(self, state: Optional[str] = None) -> str:
         """Get OAuth2 authorization URL with CSRF protection.
@@ -579,6 +645,7 @@ class OneDriveClient:
                     f.flush()
                     os.fsync(f.fileno())
 
+            self._verify_download_integrity(metadata, temp_path, file_id)
             os.replace(temp_path, local_path)
 
             logger.info(f"Downloaded: {local_path}")
@@ -628,6 +695,7 @@ class OneDriveClient:
             response = self._api_request('PUT', endpoint, data=f, headers=headers)
 
         metadata = response.json()
+        self._verify_upload_integrity(metadata, local_path, remote_path)
         logger.info(f"Uploaded: {local_path} -> {remote_path}")
         return metadata
 
@@ -667,10 +735,10 @@ class OneDriveClient:
             f"({file_size} bytes, {fragment_size}-byte fragments)"
         )
 
+        final_metadata: Optional[Dict[str, Any]] = None
         try:
             with open(local_path, 'rb') as f:
                 start = 0
-                final_metadata: Optional[Dict[str, Any]] = None
                 while start < file_size:
                     chunk = f.read(fragment_size)
                     if not chunk:
@@ -693,8 +761,6 @@ class OneDriveClient:
                 raise RuntimeError(
                     f"Upload session for {remote_path} completed without final metadata"
                 )
-            logger.info(f"Uploaded (session): {local_path} -> {remote_path}")
-            return final_metadata
         except Exception as exc:
             # Best-effort cancellation so OneDrive does not retain a partial session.
             try:
@@ -706,6 +772,10 @@ class OneDriveClient:
             if isinstance(exc, requests.exceptions.RequestException):
                 raise self._redact_upload_url_error(exc, upload_url) from None
             raise
+
+        self._verify_upload_integrity(final_metadata, local_path, remote_path)
+        logger.info(f"Uploaded (session): {local_path} -> {remote_path}")
+        return final_metadata
 
     def _redact_upload_url_error(
         self, exc: requests.exceptions.RequestException, upload_url: str

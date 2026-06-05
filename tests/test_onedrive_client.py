@@ -8,7 +8,13 @@ import pytest
 import requests
 
 from odsc.error_handling import is_transient_error
-from odsc.onedrive_client import OneDriveClient, _RetryAfterWait, _parse_retry_after_header
+from odsc.onedrive_client import (
+    IntegrityVerificationError,
+    OneDriveClient,
+    _RetryAfterWait,
+    _parse_retry_after_header,
+)
+from odsc.quickxorhash import quickxorhash_bytes
 
 
 class FakeResponse:
@@ -39,6 +45,16 @@ class FakeRequestResponse:
 
     def raise_for_status(self):
         return None
+
+
+class FakeJsonResponse:
+    """Minimal JSON response stub for upload tests."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
 
 
 def test_download_file_writes_to_temp_then_replaces(tmp_path, monkeypatch):
@@ -79,6 +95,132 @@ def test_download_file_failure_keeps_existing_file_and_cleans_temp(tmp_path, mon
 
     assert destination.read_bytes() == b"stable contents"
     assert not list(tmp_path.glob("*.odsc_tmp"))
+
+
+def test_download_file_verifies_matching_quickxorhash(tmp_path, monkeypatch):
+    """Downloads with matching OneDrive QuickXorHash are accepted."""
+    client = OneDriveClient(token_data={"access_token": "token", "expires_at": 10**12})
+    destination = tmp_path / "verified.txt"
+    content = b"verified download"
+    remote_hash = quickxorhash_bytes(content)
+
+    monkeypatch.setattr(
+        client,
+        "get_file_metadata",
+        lambda file_id: {"id": file_id, "file": {"hashes": {"quickXorHash": remote_hash}}},
+    )
+    monkeypatch.setattr(
+        client,
+        "_api_request",
+        lambda method, endpoint, **kwargs: FakeResponse([content]),
+    )
+
+    metadata = client.download_file("file-id", destination)
+
+    assert metadata["file"]["hashes"]["quickXorHash"] == remote_hash
+    assert destination.read_bytes() == content
+    assert not list(tmp_path.glob("*.odsc_tmp"))
+
+
+def test_download_file_rejects_quickxorhash_mismatch_without_replacing(tmp_path, monkeypatch):
+    """Hash mismatches fail before replacing an existing destination."""
+    client = OneDriveClient(token_data={"access_token": "token", "expires_at": 10**12})
+    destination = tmp_path / "verified.txt"
+    destination.write_bytes(b"stable contents")
+    corrupt_content = b"corrupt download"
+    remote_hash = quickxorhash_bytes(b"expected content")
+
+    monkeypatch.setattr(
+        client,
+        "get_file_metadata",
+        lambda file_id: {"id": file_id, "hashes": {"quickXorHash": remote_hash}},
+    )
+    monkeypatch.setattr(
+        client,
+        "_api_request",
+        lambda method, endpoint, **kwargs: FakeResponse([corrupt_content]),
+    )
+
+    with pytest.raises(IntegrityVerificationError):
+        OneDriveClient.download_file.__wrapped__(client, "file-id", destination)
+
+    assert destination.read_bytes() == b"stable contents"
+    assert not list(tmp_path.glob("*.odsc_tmp"))
+
+
+def test_download_file_skips_verification_without_quickxorhash(tmp_path, monkeypatch):
+    """Downloads without a remote QuickXorHash keep existing behavior."""
+    client = OneDriveClient(token_data={"access_token": "token", "expires_at": 10**12})
+    destination = tmp_path / "unhashed.txt"
+    content = b"download without hash"
+
+    monkeypatch.setattr(client, "get_file_metadata", lambda file_id: {"id": file_id})
+    monkeypatch.setattr(
+        client,
+        "_api_request",
+        lambda method, endpoint, **kwargs: FakeResponse([content]),
+    )
+
+    metadata = client.download_file("file-id", destination)
+
+    assert metadata == {"id": "file-id"}
+    assert destination.read_bytes() == content
+
+
+def test_upload_file_verifies_matching_quickxorhash(tmp_path, monkeypatch):
+    """Uploads with matching response QuickXorHash are accepted."""
+    client = OneDriveClient(token_data={"access_token": "token", "expires_at": 10**12})
+    local_path = tmp_path / "upload.txt"
+    local_path.write_bytes(b"verified upload")
+    remote_hash = quickxorhash_bytes(local_path.read_bytes())
+
+    monkeypatch.setattr(
+        client,
+        "_api_request",
+        lambda method, endpoint, **kwargs: FakeJsonResponse(
+            {"id": "remote-id", "file": {"hashes": {"quickXorHash": remote_hash}}}
+        ),
+    )
+
+    metadata = OneDriveClient.upload_file.__wrapped__(client, local_path, "upload.txt")
+
+    assert metadata["file"]["hashes"]["quickXorHash"] == remote_hash
+
+
+def test_upload_file_rejects_quickxorhash_mismatch(tmp_path, monkeypatch):
+    """Uploads fail when OneDrive reports a different QuickXorHash."""
+    client = OneDriveClient(token_data={"access_token": "token", "expires_at": 10**12})
+    local_path = tmp_path / "upload.txt"
+    local_path.write_bytes(b"verified upload")
+    remote_hash = quickxorhash_bytes(b"different content")
+
+    monkeypatch.setattr(
+        client,
+        "_api_request",
+        lambda method, endpoint, **kwargs: FakeJsonResponse(
+            {"id": "remote-id", "quickXorHash": remote_hash}
+        ),
+    )
+
+    with pytest.raises(IntegrityVerificationError):
+        OneDriveClient.upload_file.__wrapped__(client, local_path, "upload.txt")
+
+
+def test_upload_file_skips_verification_without_quickxorhash(tmp_path, monkeypatch):
+    """Upload responses without QuickXorHash keep existing behavior."""
+    client = OneDriveClient(token_data={"access_token": "token", "expires_at": 10**12})
+    local_path = tmp_path / "upload.txt"
+    local_path.write_bytes(b"upload without hash")
+
+    monkeypatch.setattr(
+        client,
+        "_api_request",
+        lambda method, endpoint, **kwargs: FakeJsonResponse({"id": "remote-id"}),
+    )
+
+    metadata = OneDriveClient.upload_file.__wrapped__(client, local_path, "upload.txt")
+
+    assert metadata == {"id": "remote-id"}
 
 
 def test_api_request_uses_cached_access_token(monkeypatch):
