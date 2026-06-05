@@ -311,6 +311,55 @@ class SyncStateManager:
             self._state.get("_deletion_failures", {}).pop(path, None)
 
     # ------------------------------------------------------------------ #
+    # Deletion tombstones                                                  #
+    # ------------------------------------------------------------------ #
+
+    def add_tombstone(self, path: str, origin: str = "remote",
+                      etag: Optional[str] = None,
+                      quick_xor: Optional[str] = None) -> None:
+        """Record a durable deletion tombstone for *path*.
+
+        A tombstone is an explicit, persisted record that *path* was deleted on
+        *origin* (``"remote"`` = removed on OneDrive). Unlike absence-based
+        inference, it survives partial state loss, so a remotely-deleted file
+        whose other state was lost is still recognised as deleted (and trashed)
+        rather than re-uploaded ("resurrected").
+
+        Args:
+            path: Relative path that was deleted.
+            origin: ``"remote"`` or ``"local"``.
+            etag: The eTag last seen before deletion.
+            quick_xor: The content hash of the deleted version. It lets the
+                resurrection guard distinguish the lingering deleted file (same
+                hash -> recycle) from a brand-new user file at the same path
+                (different hash -> the tombstone is cleared and the file syncs).
+        """
+        with self._lock:
+            tombstones = self._state.setdefault("tombstones", {})
+            tombstones[path] = {
+                "origin": origin,
+                "etag": etag or "",
+                "quickXorHash": quick_xor or "",
+                "detected_at": datetime.now().isoformat(),
+            }
+
+    def get_tombstone(self, path: str) -> Optional[Dict[str, Any]]:
+        """Return the tombstone record for *path*, or ``None``."""
+        with self._lock:
+            entry = self._state.get("tombstones", {}).get(path)
+            return copy.deepcopy(entry) if entry else None
+
+    def remove_tombstone(self, path: str) -> None:
+        """Clear the tombstone for *path* (deletion reconciled or path re-created)."""
+        with self._lock:
+            self._state.get("tombstones", {}).pop(path, None)
+
+    def all_tombstones(self) -> Dict[str, Dict[str, Any]]:
+        """Return a snapshot of all deletion tombstones."""
+        with self._lock:
+            return copy.deepcopy(self._state.get("tombstones", {}))
+
+    # ------------------------------------------------------------------ #
     # Conflict tracking                                                    #
     # ------------------------------------------------------------------ #
 

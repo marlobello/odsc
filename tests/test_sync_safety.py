@@ -355,3 +355,90 @@ def test_upload_proceeds_when_no_hash_recorded(daemon):
     daemon._upload_file(rel, {"path": local, "mtime": 2.0, "size": 4})
 
     assert len(uploaded) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Deletion tombstones (durable resurrection prevention)                        #
+# --------------------------------------------------------------------------- #
+
+def test_remote_deletion_writes_tombstone_with_hash(monkeypatch, daemon):
+    """A remote deletion records a durable tombstone (with the deleted hash)."""
+    rel = "file.txt"
+    local = daemon.config.sync_directory / rel
+    local.write_bytes(b"deleted content")
+    daemon.state_mgr.set_cache_entry(rel, {"id": "rid", "eTag": "e", "quickXorHash": "HASH_DEL"})
+
+    # Trash fails so the tombstone is retained (durable retry signal).
+    monkeypatch.setattr(daemon_module, "send2trash", Mock(side_effect=OSError("boom")))
+    daemon._process_remote_deletion({"id": "rid"})
+
+    tomb = daemon.state_mgr.get_tombstone(rel)
+    assert tomb is not None
+    assert tomb["origin"] == "remote"
+    assert tomb["quickXorHash"] == "HASH_DEL"
+
+
+def test_remote_deletion_retires_tombstone_on_trash_success(monkeypatch, daemon):
+    rel = "file.txt"
+    daemon.state_mgr.set_cache_entry(rel, {"id": "rid", "eTag": "e", "quickXorHash": "H"})
+    # No local file -> trash trivially succeeds.
+    daemon._process_remote_deletion({"id": "rid"})
+    assert daemon.state_mgr.get_tombstone(rel) is None
+
+
+def test_resurrection_guard_recycles_matching_lingering_file(monkeypatch, daemon):
+    """A local file matching a remote-deletion tombstone is recycled, not uploaded."""
+    from odsc.quickxorhash import quickxorhash_file
+
+    rel = "file.txt"
+    local = daemon.config.sync_directory / rel
+    local.write_bytes(b"the deleted bytes")
+    h = quickxorhash_file(local)
+    daemon.state_mgr.add_tombstone(rel, origin="remote", quick_xor=h)
+
+    uploaded = []
+    daemon.client = types.SimpleNamespace(upload_file=lambda *a, **k: uploaded.append(a) or {})
+    trashed = []
+    monkeypatch.setattr(daemon_module, "send2trash", lambda p: trashed.append(p))
+
+    daemon._upload_file(rel, {"path": local, "mtime": 5.0, "size": local.stat().st_size})
+
+    assert uploaded == []           # NOT re-uploaded (no resurrection)
+    assert len(trashed) == 1        # recycled instead
+    assert daemon.state_mgr.get_tombstone(rel) is None  # reconciled
+
+
+def test_resurrection_guard_uploads_user_replaced_file(monkeypatch, daemon):
+    """A NEW user file at a tombstoned path must upload (and clear the tombstone),
+    never be trashed."""
+    rel = "file.txt"
+    local = daemon.config.sync_directory / rel
+    local.write_bytes(b"brand new user content")
+    daemon.state_mgr.add_tombstone(rel, origin="remote", quick_xor="OLD_DELETED_HASH")
+
+    uploaded = []
+    daemon.client = types.SimpleNamespace(
+        upload_file=lambda *a, **k: uploaded.append(a) or {"eTag": "e2"}
+    )
+    trashed = []
+    monkeypatch.setattr(daemon_module, "send2trash", lambda p: trashed.append(p))
+
+    daemon._upload_file(rel, {"path": local, "mtime": 5.0, "size": local.stat().st_size})
+
+    assert len(uploaded) == 1                # user's new file is uploaded
+    assert trashed == []                     # never trashed
+    assert daemon.state_mgr.get_tombstone(rel) is None  # tombstone cleared
+
+
+def test_remote_file_reappearance_clears_tombstone(daemon):
+    """A path that reappears on OneDrive clears its stale deletion tombstone."""
+    rel = "file.txt"
+    daemon.state_mgr.add_tombstone(rel, origin="remote", quick_xor="H")
+    item = {
+        "id": "rid", "name": "file.txt", "size": 3, "eTag": "e",
+        "lastModifiedDateTime": "t",
+        "parentReference": {"path": "/drive/root:"},
+        "file": {"hashes": {"quickXorHash": "H2"}},
+    }
+    daemon._process_remote_file(item, daemon.config.sync_directory)
+    assert daemon.state_mgr.get_tombstone(rel) is None

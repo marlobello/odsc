@@ -564,7 +564,18 @@ class SyncDaemon:
                 if hasattr(self, '_deleted_from_remote'):
                     self._deleted_from_remote.add(path)
                     logger.debug(f"Added {path} to deleted tracking set")
-                
+
+                # Record a durable tombstone (files only) so a remotely-deleted
+                # file is never re-uploaded even if other state is lost. Carry
+                # the deleted version's content hash so a later user-created file
+                # at the same path is distinguished from the lingering copy.
+                if not is_folder:
+                    self.state_mgr.add_tombstone(
+                        path, origin='remote',
+                        etag=cached_item.get('eTag'),
+                        quick_xor=cached_item.get('quickXorHash'),
+                    )
+
                 # Delete local file/folder if it exists
                 local_path = self.config.sync_directory / path
                 if local_path.exists():
@@ -576,6 +587,8 @@ class SyncDaemon:
                     # Remove from cache and state only once the local copy is gone.
                     self.state_mgr.remove_file_entry(path)
                     self.state_mgr.clear_deletion_failure(path)
+                    # Deletion fully reconciled — retire the tombstone.
+                    self.state_mgr.remove_tombstone(path)
                 else:
                     # Trash failed and the local file survives. Keep the sync-state
                     # entry so it is not re-uploaded as a new file. For files, also
@@ -667,7 +680,10 @@ class SyncDaemon:
             
             # Update cache
             self.state_mgr.set_cache_entry(full_path, {**metadata, 'is_folder': False})
-            
+            # The path exists on OneDrive again — clear any stale deletion
+            # tombstone (handles a file that was deleted then re-created remotely).
+            self.state_mgr.remove_tombstone(full_path)
+
             return {'path': full_path, 'metadata': metadata}
             
         except SecurityError as exc:
@@ -859,9 +875,41 @@ class SyncDaemon:
             return True
         return False
 
+    def _resolve_tombstone_before_upload(self, rel_path: str, local_path: Path) -> bool:
+        """Return True if an upload should be replaced by a recycle.
+
+        Resurrection guard: if *rel_path* has a remote-deletion tombstone and the
+        local file's content still matches the deleted version's hash, the file
+        is the lingering deleted copy — recycle it instead of re-uploading it to
+        OneDrive. If the content differs (the user created a new file at the same
+        path) or the hash is unknown, the tombstone is cleared and the upload
+        proceeds, so a genuine new file is never trashed or blocked.
+        """
+        tomb = self.state_mgr.get_tombstone(rel_path)
+        if not tomb or tomb.get('origin') != 'remote':
+            return False
+        tomb_hash = tomb.get('quickXorHash')
+        if tomb_hash:
+            try:
+                local_hash = quickxorhash_file(local_path)
+            except OSError:
+                local_hash = None
+            if local_hash == tomb_hash:
+                logger.info(
+                    f"{rel_path} matches a remote-deletion tombstone; "
+                    "recycling instead of re-uploading"
+                )
+                self._recycle_remote_deleted_file(rel_path, self.config.sync_directory)
+                return True
+        # Different content (or no recorded hash): the user re-created the file.
+        self.state_mgr.remove_tombstone(rel_path)
+        return False
+
     def _upload_file(self, rel_path: str, local_info: Dict) -> None:
         """Upload a local file to OneDrive."""
         if self._upload_is_redundant(rel_path, local_info['path'], local_info['mtime'], local_info['size']):
+            return
+        if self._resolve_tombstone_before_upload(rel_path, local_info['path']):
             return
         logger.info(f"Uploading: {rel_path}")
         try:
@@ -895,6 +943,7 @@ class SyncDaemon:
         if self._move_to_recycle_bin(local_path, rel_path):
             self.state_mgr.remove_file_entry(rel_path)
             self.state_mgr.clear_deletion_failure(rel_path)
+            self.state_mgr.remove_tombstone(rel_path)  # deletion reconciled
         else:
             # Keep the sync-state entry so the surviving local file is not
             # re-uploaded, but drop the cache entry so the next sync reclassifies
@@ -1210,6 +1259,12 @@ class SyncDaemon:
             # Suppress redundant uploads (self-write echo after a download, or a
             # no-op touch) when the content hash matches the last synced value.
             if self._upload_is_redundant(str(rel_path), path, mtime, size):
+                self.state_mgr.save()
+                return
+
+            # Resurrection guard: a remotely-deleted file that lingers locally
+            # must not be re-uploaded (unless the user replaced its content).
+            if self._resolve_tombstone_before_upload(str(rel_path), path):
                 self.state_mgr.save()
                 return
 
