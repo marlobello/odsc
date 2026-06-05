@@ -12,8 +12,10 @@ Supported commands:
 import logging
 import os
 import socket
+import struct
 import threading
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +36,8 @@ class CommandServer:
         self._sock_path = socket_path(config_dir)
         self._on_sync = on_sync_requested
         self._version = version
-        self._server: socket.socket | None = None
-        self._thread: threading.Thread | None = None
+        self._server: Optional[socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
         self._running = False
 
     def start(self) -> None:
@@ -81,13 +83,48 @@ class CommandServer:
                 break
 
             try:
+                if not self._is_peer_authorized(conn):
+                    continue
                 data = conn.recv(_BUFFER_SIZE).decode("utf-8", errors="replace").strip()
-                response = self._handle(data)
+                try:
+                    response = self._handle(data)
+                except Exception:
+                    logger.exception("Error handling command socket request")
+                    response = "ERR internal error\n"
                 conn.sendall(response.encode("utf-8"))
-            except Exception as e:
-                logger.debug(f"Command socket client error: {e}")
+            except Exception:
+                logger.exception("Command socket client error")
             finally:
                 conn.close()
+
+    def _is_peer_authorized(self, conn: socket.socket) -> bool:
+        """Return True if the peer process belongs to the daemon user."""
+        so_peercred = getattr(socket, "SO_PEERCRED", None)
+        if so_peercred is None:
+            logger.warning("Rejecting command socket connection: SO_PEERCRED unavailable")
+            return False
+
+        try:
+            cred_size = struct.calcsize("3i")
+            peercred = conn.getsockopt(socket.SOL_SOCKET, so_peercred, cred_size)
+            pid, uid, _gid = struct.unpack("3i", peercred)
+        except Exception:
+            logger.warning(
+                "Rejecting command socket connection: unable to verify peer credentials",
+                exc_info=True,
+            )
+            return False
+
+        expected_uid = os.getuid()
+        if uid != expected_uid:
+            logger.warning(
+                "Rejecting command socket connection from uid %s (expected %s), pid %s",
+                uid,
+                expected_uid,
+                pid,
+            )
+            return False
+        return True
 
     def _handle(self, command: str) -> str:
         """Dispatch a command string and return a response."""
@@ -96,9 +133,9 @@ class CommandServer:
             try:
                 self._on_sync()
                 return "OK\n"
-            except Exception as e:
-                logger.error(f"Error handling SYNC command: {e}")
-                return f"ERR {e}\n"
+            except Exception:
+                logger.exception("Error handling SYNC command")
+                return "ERR internal error\n"
         elif command == "VERSION":
             return f"OK {self._version}\n"
         else:

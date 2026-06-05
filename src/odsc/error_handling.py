@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Callable
 
 import requests
 
@@ -36,12 +36,21 @@ def log_exception(
     exc: BaseException,
     *,
     exc_info: bool = False,
+    sanitizer: Optional[Callable[[str], str]] = None,
 ) -> None:
-    """Log *exc* using warning for transient failures and error otherwise."""
+    """Log *exc* using warning for transient failures and error otherwise.
+
+    Args:
+        sanitizer: Optional callable applied to the exception text before it is
+            logged (e.g. to redact tokens from request errors).
+    """
     level = get_log_level(exc)
+    detail = str(exc)
+    if sanitizer is not None:
+        detail = sanitizer(detail)
     logger.log(
         level,
-        f"{message}: {exc}",
+        f"{message}: {detail}",
         exc_info=exc_info and level >= logging.ERROR,
     )
 

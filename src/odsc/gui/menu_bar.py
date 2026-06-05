@@ -188,17 +188,21 @@ class MenuBarMixin:
         thread = threading.Thread(target=wait_for_callback, daemon=True)
         thread.start()
         
-        # Wait for server to be listening before opening the browser
-        server_ready.wait(timeout=5)
-        
-        if server_failed.is_set():
-            return
-        
-        logger.info("Opening browser for authentication")
-        webbrowser.open(auth_url)
-        
-        self._update_status("Waiting for authentication...")
-        logger.info("Authentication flow initiated, waiting for user...")
+        def open_browser_when_ready():
+            # Wait off the GTK thread so the login menu does not freeze the UI.
+            server_ready.wait(timeout=5)
+
+            if server_failed.is_set():
+                return
+
+            logger.info("Opening browser for authentication")
+            webbrowser.open(auth_url)
+
+            GLib.idle_add(self._update_status, "Waiting for authentication...")
+            logger.info("Authentication flow initiated, waiting for user...")
+
+        wait_thread = threading.Thread(target=open_browser_when_ready, daemon=True)
+        wait_thread.start()
     
     def _on_auth_success(self) -> None:
         """Handle successful authentication."""

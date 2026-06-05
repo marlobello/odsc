@@ -50,13 +50,14 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 **Key Features**:
 - Stores user preferences (sync directory, interval, client ID)
 - Manages OAuth tokens securely
-- Tracks sync state (file metadata, last sync time)
-- Uses JSON files in `~/.config/odsc/`
+- Tracks sync state (file metadata, last sync time) in SQLite
+- Uses a pluggable `StateBackend`; the default is `SqliteStateBackend`
+- Keeps configuration and state under `~/.config/odsc/`
 
 **Files**:
 - `config.json`: User settings (sync_directory, sync_interval, log_level, client_id)
 - `.onedrive_token`: Encrypted OAuth credentials (uses keyring + cryptography)
-- `sync_state.json`: Sync metadata (file mtime, size, eTag, downloaded status)
+- `sync_state.db`: SQLite state database with `file_cache`, `sync_state`, and `metadata` tables
 - `odsc.log`: Application logs
 
 ### 2. OneDrive Client (`onedrive_client.py`)
@@ -101,9 +102,9 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 - **Conflict preservation**: Both versions kept when simultaneous edits occur
 - **Debouncing**: Batch rapid changes before uploading
 
-### 4. GNOME GUI (`gui.py`)
+### 4. GNOME GUI (`src/odsc/gui/` package)
 
-**Responsibility**: User interface for viewing and managing OneDrive files.
+**Responsibility**: Modular user interface for viewing and managing OneDrive files.
 
 **Key Features**:
 - **Authentication**: OAuth flow with local callback server (port 8080)
@@ -116,6 +117,8 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 - **Refresh**: Manual update of file list from OneDrive
 
 **UI Components**:
+- Package entry point in `__init__.py`; main window in `main_window.py`
+- Dialogs in `dialogs.py`, menu bar in `menu_bar.py`, file tree in `file_tree_view.py`
 - Main window with toolbar (Authenticate, Settings, Refresh)
 - File list (TreeView with columns: Name, Size, Modified, Local Status)
 - Action buttons: "Keep Local Copy", "Remove Local Copy"
@@ -238,22 +241,22 @@ Store Token + Refresh Token
 
 ### API Rate Limiting
 - Microsoft Graph has rate limits
-- Client implements exponential backoff (TODO)
+- Uploads and downloads use `tenacity` retries with exponential backoff and jitter for transient errors
 - Batch operations where possible
 
 ### Large Files
 - Streaming upload/download
-- Chunk size: 8KB for downloads
+- Download chunk size: 64 KB (65536 bytes), configurable via `download_chunk_size`
 - No size limit (handled by API)
 
 ## Extensibility
 
 ### Adding Features
 
-**Two-way Sync**:
-1. Modify daemon to periodically check OneDrive for changes
-2. Download changed files
-3. Implement conflict detection
+**Sync Policy Improvements**:
+1. Extend the daemon's existing periodic delta sync for additional policies
+2. Adjust selective download decisions
+3. Expand conflict handling workflows
 
 **File Filters**:
 1. Add ignore patterns to config

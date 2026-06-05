@@ -14,6 +14,8 @@ Use this when local state becomes corrupted or out of sync with OneDrive.
 OneDrive will be treated as the authoritative source.
 """
 
+from __future__ import annotations
+
 import argparse
 import logging
 import shutil

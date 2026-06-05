@@ -9,7 +9,7 @@ import threading
 import time
 from functools import wraps
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any, Callable, Tuple
 from datetime import datetime, timedelta
 from urllib.parse import urlencode, urlparse
 
@@ -17,7 +17,7 @@ import requests
 import certifi
 from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception, before_sleep_log
 
-from .error_handling import get_http_status, get_log_level, is_transient_error
+from .error_handling import get_http_status, is_transient_error, log_exception
 from .path_utils import SecurityError
 
 
@@ -40,6 +40,14 @@ class OneDriveClient:
     # Users can override this by providing their own client ID if needed
     DEFAULT_CLIENT_ID = "df3a0308-c302-4962-b115-08bd59526bc5"
     
+    # Files larger than this are uploaded with a resumable upload session
+    # instead of a single PUT. Microsoft Graph requires a session for files
+    # above ~4 MiB and rejects large simple uploads.
+    SIMPLE_UPLOAD_MAX_BYTES = 4 * 1024 * 1024
+    # Upload-session fragment size. Graph requires a multiple of 320 KiB
+    # (327680 bytes) for every fragment except the final one.
+    UPLOAD_FRAGMENT_SIZE = 10 * 327680  # ~3.1 MiB
+
     def __init__(self, client_id: Optional[str] = None, token_data: Optional[Dict[str, Any]] = None):
         """Initialize OneDrive client.
         
@@ -81,12 +89,7 @@ class OneDriveClient:
 
     def _log_request_exception(self, message: str, exc: BaseException, *, exc_info: bool = False) -> None:
         """Log request exceptions with sanitized output and appropriate severity."""
-        level = get_log_level(exc)
-        logger.log(
-            level,
-            f"{message}: {self._sanitize_for_log(str(exc))}",
-            exc_info=exc_info and level >= logging.ERROR,
-        )
+        log_exception(logger, message, exc, exc_info=exc_info, sanitizer=self._sanitize_for_log)
 
     def _log_http_error(self, method: str, endpoint: str, exc: requests.exceptions.HTTPError) -> None:
         """Log HTTP failures with transient/permanent severity."""
@@ -371,7 +374,7 @@ class OneDriveClient:
             self._log_request_exception(f"Request failed for GET {parsed.path}", exc)
             raise
     
-    def get_delta(self, delta_token: Optional[str] = None) -> tuple[List[Dict[str, Any]], str]:
+    def get_delta(self, delta_token: Optional[str] = None) -> Tuple[List[Dict[str, Any]], str]:
         """Get changes since last sync using delta query.
         
         This is much more efficient than list_all_files() for incremental syncs.
@@ -423,48 +426,15 @@ class OneDriveClient:
             if delta_link:
                 logger.info(f"Delta query complete: {len(all_changes)} items")
                 return all_changes, delta_link
-            
-            # Should not reach here, but handle gracefully
-            logger.warning("Delta query ended without deltaLink")
-            break
-        
-        return all_changes, None
-    
-    def list_all_files(self, path: str = "/") -> List[Dict[str, Any]]:
-        """Recursively list all files and folders in OneDrive.
 
-        .. deprecated::
-            Use :meth:`get_delta` instead.  ``list_all_files`` fetches the
-            entire tree on every call (O(n) API requests) and does not support
-            incremental syncs.  It is retained only for scripts that have not
-            yet been migrated and **will be removed in a future release**.
-
-        Args:
-            path: Starting directory path
-
-        Returns:
-            List of all file and folder metadata
-        """
-        import warnings
-        warnings.warn(
-            "list_all_files() is deprecated and will be removed in a future release. "
-            "Use get_delta() for efficient incremental syncs.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        all_items = []
-        items = self.list_files(path)
-        
-        for item in items:
-            # Add the item itself (file or folder)
-            all_items.append(item)
-            
-            if 'folder' in item:
-                # It's a folder, recurse into it
-                folder_path = item['parentReference'].get('path', '').replace('/drive/root:', '') + '/' + item['name']
-                all_items.extend(self.list_all_files(folder_path))
-        
-        return all_items
+            # A well-formed delta query always terminates with either a
+            # nextLink or a deltaLink. Reaching here means the response was
+            # malformed/truncated. Raise rather than returning a None token,
+            # which a caller could persist and corrupt the next sync.
+            raise RuntimeError(
+                "Delta query ended without a deltaLink or nextLink; "
+                "the response was malformed or truncated."
+            )
     
     def get_file_by_path(self, remote_path: str) -> Optional[Dict[str, Any]]:
         """Get file metadata by path.
@@ -552,29 +522,132 @@ class OneDriveClient:
     )
     def upload_file(self, local_path: Path, remote_path: str) -> Dict[str, Any]:
         """Upload file to OneDrive with retry logic.
-        
+
+        Small files are sent with a single PUT. Files larger than
+        :attr:`SIMPLE_UPLOAD_MAX_BYTES` use a resumable upload session, which
+        Microsoft Graph requires for large files (a simple PUT fails for
+        files above ~250 MB and is discouraged above ~4 MiB).
+
         Args:
             local_path: Local file path
             remote_path: Remote destination path
-            
+
         Returns:
             Upload response metadata including eTag
-            
+
         Raises:
             Exception: If upload fails after all retries
         """
         # Remove leading slash
         remote_path = remote_path.lstrip('/')
-        
+
+        file_size = local_path.stat().st_size
+        if file_size > self.SIMPLE_UPLOAD_MAX_BYTES:
+            return self._upload_large_file(local_path, remote_path, file_size)
+
         endpoint = f"/me/drive/root:/{remote_path}:/content"
-        
+
         with open(local_path, 'rb') as f:
             headers = {'Content-Type': 'application/octet-stream'}
             response = self._api_request('PUT', endpoint, data=f, headers=headers)
-        
+
         metadata = response.json()
         logger.info(f"Uploaded: {local_path} -> {remote_path}")
         return metadata
+
+    def _create_upload_session(self, remote_path: str) -> str:
+        """Create a resumable upload session and return its upload URL."""
+        endpoint = f"/me/drive/root:/{remote_path}:/createUploadSession"
+        body = {"item": {"@microsoft.graph.conflictBehavior": "replace"}}
+        response = self._api_request('POST', endpoint, json=body)
+        upload_url = response.json().get('uploadUrl')
+        if not upload_url:
+            raise RuntimeError("OneDrive did not return an upload URL for the session")
+        return upload_url
+
+    def _upload_large_file(
+        self, local_path: Path, remote_path: str, file_size: int
+    ) -> Dict[str, Any]:
+        """Upload a large file using a resumable upload session.
+
+        Uploads the file in fixed-size fragments. The pre-authenticated
+        ``uploadUrl`` returned by Graph is used directly (it must not carry the
+        bearer token). If any fragment fails the session is cancelled so a
+        partial upload is not left behind, and the error propagates to the
+        ``@retry`` wrapper which restarts with a fresh session.
+
+        Args:
+            local_path: Local file path.
+            remote_path: Remote destination path (no leading slash).
+            file_size: Size of the file in bytes.
+
+        Returns:
+            Final item metadata returned by OneDrive.
+        """
+        upload_url = self._create_upload_session(remote_path)
+        fragment_size = self.UPLOAD_FRAGMENT_SIZE
+        logger.info(
+            f"Uploading large file via session: {local_path} -> {remote_path} "
+            f"({file_size} bytes, {fragment_size}-byte fragments)"
+        )
+
+        try:
+            with open(local_path, 'rb') as f:
+                start = 0
+                final_metadata: Optional[Dict[str, Any]] = None
+                while start < file_size:
+                    chunk = f.read(fragment_size)
+                    if not chunk:
+                        break
+                    end = start + len(chunk) - 1
+                    headers = {
+                        'Content-Length': str(len(chunk)),
+                        'Content-Range': f"bytes {start}-{end}/{file_size}",
+                    }
+                    response = self._session.put(
+                        upload_url, data=chunk, headers=headers, timeout=(10, 300)
+                    )
+                    response.raise_for_status()
+                    # 202 => more fragments expected; 200/201 => upload complete.
+                    if response.status_code in (200, 201):
+                        final_metadata = response.json()
+                    start = end + 1
+
+            if final_metadata is None:
+                raise RuntimeError(
+                    f"Upload session for {remote_path} completed without final metadata"
+                )
+            logger.info(f"Uploaded (session): {local_path} -> {remote_path}")
+            return final_metadata
+        except Exception as exc:
+            # Best-effort cancellation so OneDrive does not retain a partial session.
+            try:
+                self._session.delete(upload_url, timeout=(10, 60))
+            except requests.exceptions.RequestException:
+                logger.debug("Could not cancel upload session", exc_info=True)
+            # The pre-authenticated uploadUrl embeds a temporary credential; never
+            # let it reach logs (tenacity/daemon log exception text on retry).
+            if isinstance(exc, requests.exceptions.RequestException):
+                raise self._redact_upload_url_error(exc, upload_url) from None
+            raise
+
+    def _redact_upload_url_error(
+        self, exc: requests.exceptions.RequestException, upload_url: str
+    ) -> requests.exceptions.RequestException:
+        """Return a copy of *exc* with the pre-authenticated upload URL redacted.
+
+        Preserves the exception class (so retry classification via
+        ``is_transient_error`` still works) and any attached HTTP response.
+        """
+        message = str(exc).replace(upload_url, "<redacted-upload-url>")
+        if isinstance(exc, requests.exceptions.HTTPError):
+            return requests.exceptions.HTTPError(
+                message, response=getattr(exc, "response", None)
+            )
+        try:
+            return type(exc)(message)
+        except Exception:
+            return requests.exceptions.RequestException(message)
     
     def create_folder(self, folder_path: str) -> Dict[str, Any]:
         """Create a folder on OneDrive.

@@ -169,8 +169,9 @@ def cmd_list(args):
     
     try:
         print("Fetching files from OneDrive...")
-        files = client.list_all_files()
-        
+        items, _ = client.get_delta(None)
+        files = [it for it in items if it.get('name') and 'root' not in it]
+
         print(f"\nOneDrive Files ({len(files)} total):")
         print("=" * 60)
         
@@ -198,8 +199,38 @@ def cmd_list(args):
         return 1
 
 
+def _download_bytes(url: str, timeout: int = 30) -> bytes:
+    """Download *url* and return its raw bytes."""
+    req = urllib.request.Request(url, headers={"User-Agent": f"odsc/{__version__}"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _fetch_expected_sha256(checksum_url: str) -> "str | None":
+    """Fetch and parse a published SHA-256 checksum, or None if unavailable."""
+    try:
+        text = _download_bytes(checksum_url, timeout=15).decode("utf-8", "replace").strip()
+    except Exception:
+        return None
+    token = text.split()[0].lower() if text else ""
+    if len(token) == 64 and all(c in "0123456789abcdef" for c in token):
+        return token
+    return None
+
+
+def _confirm(prompt: str) -> bool:
+    """Prompt for confirmation. Returns False for non-interactive sessions."""
+    try:
+        if not sys.stdin.isatty():
+            return False
+        return input(f"{prompt} [y/N]: ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
 def cmd_update(args):
     """Check for available updates and apply them."""
+    import hashlib
     import subprocess
     import tempfile
 
@@ -220,26 +251,42 @@ def cmd_update(args):
         installed_parts = [int(x) for x in __version__.split(".")]
         latest_parts = [int(x) for x in latest.split(".")]
 
-        if latest_parts > installed_parts:
-            print(f"⬆  Update available: v{latest}")
-            print("Downloading and installing update...")
-            install_url = f"https://github.com/marlobello/odsc/releases/download/v{latest}/install.sh"
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as tmp:
-                tmp_path = tmp.name
-                req = urllib.request.Request(install_url, headers={"User-Agent": f"odsc/{__version__}"})
-                with urllib.request.urlopen(req, timeout=30) as dl:
-                    tmp.write(dl.read().decode("utf-8"))
-            try:
-                result = subprocess.run(["bash", tmp_path], check=False)
-                return result.returncode
-            finally:
-                Path(tmp_path).unlink(missing_ok=True)
-        else:
+        if latest_parts <= installed_parts:
             print(f"✓ You are running the latest version ({__version__}).")
+            return 0
+
+        print(f"⬆  Update available: v{latest}")
+        install_url = f"https://github.com/marlobello/odsc/releases/download/v{latest}/install.sh"
+        checksum_url = f"{install_url}.sha256"
+
+        print("Downloading update...")
+        with tempfile.TemporaryDirectory() as td:
+            script_path = Path(td) / "install.sh"
+            script_path.write_bytes(_download_bytes(install_url, timeout=30))
+
+            # Integrity check: refuse to execute a tampered/corrupted installer.
+            expected = _fetch_expected_sha256(checksum_url)
+            actual = hashlib.sha256(script_path.read_bytes()).hexdigest()
+            if expected is not None:
+                if actual != expected:
+                    print("✗ Update aborted: installer checksum mismatch.")
+                    print(f"    expected {expected}")
+                    print(f"    actual   {actual}")
+                    print("  The download may be corrupted or tampered with; it was NOT run.")
+                    return 1
+                print("✓ Installer checksum verified.")
+            else:
+                print("⚠  No published checksum found for this release; integrity cannot be verified.")
+                if not args.yes and not _confirm("Run the downloaded installer anyway?"):
+                    print("Update cancelled. Re-run with --yes to bypass this prompt.")
+                    return 1
+
+            print("Installing update...")
+            result = subprocess.run(["bash", str(script_path)], check=False)
+            return result.returncode
     except Exception as e:
         print(f"Error checking for updates: {e}")
         return 1
-    return 0
 
 
 def cmd_conflicts(args):
@@ -296,6 +343,10 @@ def main():
 
     # Update command
     update_parser = subparsers.add_parser('update', help='Check for and install updates')
+    update_parser.add_argument(
+        '--yes', '-y', action='store_true',
+        help='Run the installer without prompting even if no checksum is published',
+    )
     update_parser.set_defaults(func=cmd_update)
 
     # Conflicts command

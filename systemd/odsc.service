@@ -10,6 +10,9 @@ Type=simple
 ExecStart=/usr/bin/python3 -m odsc.daemon
 Restart=on-failure
 RestartSec=5
+# Cap graceful-shutdown wait so a stuck stop can't block restarts for the
+# 90s systemd default before SIGKILL.
+TimeoutStopSec=20
 
 [Install]
 WantedBy=graphical-session.target

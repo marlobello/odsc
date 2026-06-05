@@ -50,7 +50,7 @@ def test_process_delta_changes_ignores_invalid_items(caplog):
     )
 
     assert updated == existing
-    assert "Error processing change" in caplog.text
+    assert "Skipping malformed delta item" in caplog.text
 
 
 def test_cache_to_file_list_adds_missing_name_and_cache_path():

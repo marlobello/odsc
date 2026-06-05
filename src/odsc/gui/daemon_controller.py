@@ -4,6 +4,8 @@ All GUI code that needs to start/stop/restart/query the daemon imports this
 class instead of duplicating subprocess + systemctl boilerplate.
 """
 
+from __future__ import annotations
+
 import logging
 import subprocess
 

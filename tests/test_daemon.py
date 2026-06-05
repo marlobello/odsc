@@ -119,11 +119,19 @@ def test_start_falls_back_to_headless_when_tray_setup_fails(monkeypatch, config)
 
 
 def test_on_glib_signal_quits_main_loop(monkeypatch, config):
-    """GLib signal handlers should stop the daemon and exit the GTK loop."""
+    """GLib signal handlers should defer main_quit onto an idle callback.
+
+    Calling Gtk.main_quit() directly from a unix-signal source does not break
+    Gtk.main(), so the handler must schedule it via GLib.idle_add instead.
+    """
     gtk = types.SimpleNamespace(main_quit=Mock())
     marker = object()
+    idle_add = Mock()
     monkeypatch.setattr(daemon_module, "Gtk", gtk)
-    monkeypatch.setattr(daemon_module, "GLib", types.SimpleNamespace(SOURCE_REMOVE=marker))
+    monkeypatch.setattr(
+        daemon_module, "GLib",
+        types.SimpleNamespace(SOURCE_REMOVE=marker, idle_add=idle_add),
+    )
 
     daemon = daemon_module.SyncDaemon(config)
     daemon._running = True
@@ -131,7 +139,9 @@ def test_on_glib_signal_quits_main_loop(monkeypatch, config):
     result = daemon._on_glib_signal(15)
 
     assert daemon._running is False
-    gtk.main_quit.assert_called_once()
+    # Quit is deferred via idle_add, not called directly.
+    idle_add.assert_called_once_with(gtk.main_quit)
+    gtk.main_quit.assert_not_called()
     assert result is marker
 
 

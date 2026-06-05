@@ -6,9 +6,9 @@ the GUI and sync daemon to eliminate code duplication.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Any
 
-from ..path_utils import sanitize_onedrive_path
+from ..path_utils import sanitize_onedrive_path, SecurityError
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +47,10 @@ class FileCacheService:
                     full_path = FileCacheService._build_item_path(item)
                     file_cache[full_path] = item
                     logger.debug(f"Updated cache for: {full_path}")
-                except Exception as e:
-                    logger.warning(f"Error processing change: {e}")
+                except (SecurityError, KeyError, TypeError, ValueError) as e:
+                    # Skip known-malformed/unsafe items but let unexpected
+                    # errors propagate so real failures are not hidden.
+                    logger.warning(f"Skipping malformed delta item: {e}")
         
         return file_cache
     
@@ -71,8 +73,8 @@ class FileCacheService:
                 try:
                     full_path = FileCacheService._build_item_path(item)
                     file_cache[full_path] = item
-                except Exception as e:
-                    logger.warning(f"Error processing item: {e}")
+                except (SecurityError, KeyError, TypeError, ValueError) as e:
+                    logger.warning(f"Skipping malformed delta item: {e}")
         
         return file_cache
     

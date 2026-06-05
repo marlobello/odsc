@@ -143,6 +143,17 @@ class SyncStateManager:
             self._state["file_cache"].pop(rel_path, None)
             logger.debug(f"Removed {rel_path} from state")
 
+    def remove_cache_entry(self, rel_path: str) -> None:
+        """Remove *rel_path* from ``file_cache`` only, leaving sync state intact.
+
+        Used when a remote deletion could not be applied locally (trash failed):
+        dropping the cache entry reclassifies the surviving local file as
+        local-only so the next sync retries the deletion, while the retained
+        ``files`` entry prevents it from being mistaken for a new upload.
+        """
+        with self._lock:
+            self._state["file_cache"].pop(rel_path, None)
+
     def all_tracked_paths(self) -> List[str]:
         """Return a snapshot list of all tracked file paths."""
         with self._lock:
@@ -186,6 +197,28 @@ class SyncStateManager:
                 for old_key in matches:
                     new_key = new_prefix + old_key[len(old_prefix):]
                     store[new_key] = store.pop(old_key)
+                    count += 1
+        return count
+
+    def remove_entries_with_prefix(self, prefix: str) -> int:
+        """Remove every path equal to or beneath *prefix* from state.
+
+        Removes matching keys from both ``files`` and ``file_cache``. Used when
+        a tracked directory is moved out of the sync root: the subtree must stop
+        being tracked locally without rewriting child paths.
+
+        Returns:
+            Number of entries removed.
+        """
+        count = 0
+        with self._lock:
+            for store in (self._state["files"], self._state["file_cache"]):
+                matches = [
+                    k for k in store
+                    if k == prefix or k.startswith(prefix + "/")
+                ]
+                for key in matches:
+                    store.pop(key, None)
                     count += 1
         return count
 

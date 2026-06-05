@@ -2,12 +2,15 @@
 
 import html
 import logging
+import threading
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import gi
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk
+from gi.repository import Gtk, GLib
 
 from ..config import Config
 from ..onedrive_client import OneDriveClient
@@ -92,6 +95,9 @@ class AuthInfoDialog(Gtk.Dialog):
         
         self.config = config
         self.client = client
+        self._destroyed = False
+        self._account_group = None
+        self.connect("destroy", self._on_destroy)
         self.set_default_size(550, 400)
         self.set_border_width(0)
         
@@ -113,108 +119,24 @@ class AuthInfoDialog(Gtk.Dialog):
         is_authenticated = token_data is not None and client is not None
         
         if is_authenticated:
-            # Get user info from API
-            user_info = None
-            try:
-                if client:
-                    user_info = client.get_user_info()
-            except Exception as e:
-                logger.warning(f"Could not fetch user info: {e}")
-            
-            # Account Information Group
             account_group = self._create_auth_group(
                 "Account Information",
                 "Microsoft account details"
             )
+            self._account_group = account_group
             main_box.pack_start(account_group, False, False, 0)
+            account_group.list_box.add(self._create_info_row("Account", "Loading..."))
             
-            # User Name
-            if user_info and 'displayName' in user_info:
-                name_row = self._create_info_row(
-                    "User Name",
-                    html.escape(user_info['displayName'])
-                )
-                account_group.add(name_row)
-            
-            # Email
-            if user_info:
-                email = user_info.get('mail') or user_info.get('userPrincipalName')
-                if email:
-                    email_row = self._create_info_row(
-                        "Email",
-                        html.escape(email),
-                        selectable=True
-                    )
-                    account_group.add(email_row)
-            
-            # Status
-            status_row = self._create_info_row(
-                "Status",
-                "✓ Authenticated"
-            )
-            account_group.add(status_row)
-            
-            # Session Information Group
             session_group = self._create_auth_group(
                 "Session Information",
-                "Token and authentication status"
+                "Authentication status"
             )
             main_box.pack_start(session_group, False, False, 0)
+            session_group.list_box.add(self._create_info_row("Status", "✓ Authenticated"))
+            session_group.list_box.add(self._create_info_row("Token Validity", self._format_token_validity(token_data)))
             
-            # Last Login Time
-            if token_data and 'expires_at' in token_data and 'expires_in' in token_data:
-                import time
-                from datetime import datetime
-                expires_at = token_data['expires_at']
-                expires_in = token_data['expires_in']
-                created_at = expires_at - expires_in
-                login_datetime = datetime.fromtimestamp(created_at)
-                
-                login_row = self._create_info_row(
-                    "Last Login",
-                    login_datetime.strftime('%Y-%m-%d %H:%M:%S')
-                )
-                session_group.add(login_row)
-            
-            # Token expiry info
-            if token_data and 'expires_at' in token_data:
-                import time
-                from datetime import datetime
-                expires_at = token_data['expires_at']
-                expires_datetime = datetime.fromtimestamp(expires_at)
-                time_remaining = expires_at - time.time()
-                
-                if time_remaining > 0:
-                    hours = int(time_remaining / 3600)
-                    expiry_text = f"{expires_datetime.strftime('%Y-%m-%d %H:%M')} ({hours}h remaining)"
-                else:
-                    expiry_text = "Expired (will auto-refresh)"
-                
-                expiry_row = self._create_info_row(
-                    "Token Expires",
-                    expiry_text
-                )
-                session_group.add(expiry_row)
-            
-            # Has refresh token?
-            if token_data and 'refresh_token' in token_data:
-                refresh_row = self._create_info_row(
-                    "Refresh Token",
-                    "✓ Available"
-                )
-                session_group.add(refresh_row)
-            
-            # Token file location
-            token_row = self._create_info_row(
-                "Token File",
-                str(config.token_path),
-                selectable=True,
-                wrap=True
-            )
-            session_group.add(token_row)
-            
-            # Buttons
             self.add_button("_Close", Gtk.ResponseType.CLOSE)
+            self._load_user_info_async(client)
             
         else:
             # Not authenticated - show info message
@@ -229,13 +151,71 @@ class AuthInfoDialog(Gtk.Dialog):
                 "Use Authentication → Login to authenticate with your Microsoft account",
                 wrap=True
             )
-            not_auth_group.add(info_row)
+            not_auth_group.list_box.add(info_row)
             
-            # Buttons
             self.add_button("_Close", Gtk.ResponseType.CLOSE)
         
         self.show_all()
     
+    def _on_destroy(self, widget) -> None:
+        """Track dialog destruction so async callbacks do not update it."""
+        self._destroyed = True
+
+    def _load_user_info_async(self, client: OneDriveClient) -> None:
+        """Fetch account details off the GTK thread."""
+        def load_in_thread():
+            try:
+                user_info = client.get_user_info()
+                GLib.idle_add(self._show_user_info_result, user_info, None)
+            except Exception as exc:
+                logger.warning(f"Could not fetch user info: {exc}")
+                GLib.idle_add(self._show_user_info_result, None, str(exc))
+
+        thread = threading.Thread(target=load_in_thread, daemon=True)
+        thread.start()
+
+    def _show_user_info_result(self, user_info, error: Optional[str]) -> bool:
+        """Populate account details after async loading completes."""
+        if self._destroyed or self._account_group is None:
+            return False
+
+        list_box = self._account_group.list_box
+        for child in list(list_box.get_children()):
+            list_box.remove(child)
+
+        if error:
+            list_box.add(self._create_info_row("Status", "⚠ Could not load account details"))
+            list_box.add(self._create_info_row("Details", "Account information is unavailable right now.", wrap=True))
+        else:
+            display_name = user_info.get('displayName') if user_info else None
+            email = None
+            if user_info:
+                email = user_info.get('mail') or user_info.get('userPrincipalName')
+
+            signed_in_as = display_name or email or "Microsoft account"
+            list_box.add(self._create_info_row("Status", f"Signed in as {html.escape(signed_in_as)}", wrap=True))
+            if display_name:
+                list_box.add(self._create_info_row("User Name", html.escape(display_name)))
+            if email:
+                list_box.add(self._create_info_row("Email", html.escape(email), selectable=True))
+
+        list_box.show_all()
+        return False
+
+    def _format_token_validity(self, token_data) -> str:
+        """Return a non-sensitive summary of token validity."""
+        if not token_data or 'expires_at' not in token_data:
+            return "Unknown"
+
+        expires_at = token_data['expires_at']
+        expires_datetime = datetime.fromtimestamp(expires_at)
+        time_remaining = expires_at - time.time()
+
+        if time_remaining > 0:
+            hours = int(time_remaining / 3600)
+            return f"Valid until {expires_datetime.strftime('%Y-%m-%d %H:%M')} ({hours}h remaining)"
+        return "Expired (will auto-refresh)"
+
     def _create_auth_group(self, title: str, description: str) -> Gtk.Box:
         """Create a Libadwaita-style group for authentication dialog."""
         group_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)

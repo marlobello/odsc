@@ -5,7 +5,6 @@ import logging
 import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 import gi
@@ -451,16 +450,29 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
     
     def _restart_daemon(self) -> None:
         """Restart the ODSC daemon."""
-        if not self._daemon.is_running():
-            if DialogHelper.show_confirm(
-                self,
-                "Daemon Not Running",
-                "The ODSC daemon is not currently running.\n\nWould you like to start it now?",
-            ):
-                self._start_daemon()
-            return
+        def restart_in_thread():
+            if not self._daemon.is_running():
+                GLib.idle_add(self._prompt_start_daemon_after_restart_check)
+                return
 
-        success, msg = self._daemon.restart()
+            success, msg = self._daemon.restart()
+            GLib.idle_add(self._show_restart_daemon_result, success, msg)
+
+        thread = threading.Thread(target=restart_in_thread, daemon=True)
+        thread.start()
+
+    def _prompt_start_daemon_after_restart_check(self) -> bool:
+        """Prompt to start the daemon after an async restart status check."""
+        if DialogHelper.show_confirm(
+            self,
+            "Daemon Not Running",
+            "The ODSC daemon is not currently running.\n\nWould you like to start it now?",
+        ):
+            self._start_daemon()
+        return False
+
+    def _show_restart_daemon_result(self, success: bool, msg: str) -> bool:
+        """Show the result of an async daemon restart."""
         if success:
             DialogHelper.show_info(
                 self,
@@ -474,10 +486,19 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                 "Could not restart the background sync service. "
                 "Please try again or restart it manually.",
             )
+        return False
 
     def _start_daemon(self) -> None:
         """Start the ODSC daemon."""
-        success, msg = self._daemon.start()
+        def start_in_thread():
+            success, msg = self._daemon.start()
+            GLib.idle_add(self._show_start_daemon_result, success, msg)
+
+        thread = threading.Thread(target=start_in_thread, daemon=True)
+        thread.start()
+
+    def _show_start_daemon_result(self, success: bool, msg: str) -> bool:
+        """Show the result of an async daemon start."""
         if success:
             DialogHelper.show_info(
                 self,
@@ -491,6 +512,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                 "Could not start the background sync service. "
                 "Please try again or start it manually.",
             )
+        return False
 
     def _check_service_status(self) -> bool:
         """Check if the ODSC service is running; show info bar if not.
@@ -498,11 +520,22 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         Returns:
             False to cancel the GLib timer (one-shot check).
         """
-        if not self._daemon.is_running():
+        def check_in_thread():
+            is_running = self._daemon.is_running()
+            GLib.idle_add(self._show_service_status_result, is_running)
+
+        thread = threading.Thread(target=check_in_thread, daemon=True)
+        thread.start()
+        return False
+
+    def _show_service_status_result(self, is_running: bool) -> bool:
+        """Show or hide the service warning after an async status check."""
+        if not is_running:
             logger.info("ODSC service is not running")
             self._show_service_not_running_bar()
         else:
             logger.info("ODSC service is running")
+            self._hide_service_info_bar()
         return False
     
     def _show_service_not_running_bar(self) -> None:
@@ -550,7 +583,15 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
     
     def _start_daemon_from_notification(self) -> None:
         """Start the daemon from the notification bar."""
-        success, msg = self._daemon.start()
+        def start_in_thread():
+            success, msg = self._daemon.start()
+            GLib.idle_add(self._show_notification_start_result, success, msg)
+
+        thread = threading.Thread(target=start_in_thread, daemon=True)
+        thread.start()
+
+    def _show_notification_start_result(self, success: bool, msg: str) -> bool:
+        """Show the result of starting the daemon from the notification bar."""
         if success:
             DialogHelper.show_info(
                 self,
@@ -566,6 +607,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
                 "Could not start the OneDrive Sync service.\n\n"
                 "You can start it manually with:\n  systemctl --user start odsc.service",
             )
+        return False
     
     def _hide_service_info_bar(self) -> None:
         """Hide and destroy the service info bar."""

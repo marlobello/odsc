@@ -26,6 +26,7 @@ from .logging_config import setup_logging
 from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
 from .command_socket import CommandServer
 from .sync_state import SyncStateManager
+from .sync import SyncDecisionEngine
 
 GITHUB_RELEASES_API = "https://api.github.com/repos/marlobello/odsc/releases/latest"
 UPDATE_CHECK_INTERVAL = 86400  # 24 hours
@@ -141,6 +142,7 @@ class SyncDaemon:
 
         self.state_mgr = SyncStateManager(self.config.load_state, self.config.save_state)
         self.state_mgr.load()
+        self.decision_engine = SyncDecisionEngine(self.state_mgr.get_cache_entry)
         
         # Setup signal handlers (Python-level, used during startup and headless mode)
         self._setup_signal_handlers()
@@ -301,14 +303,16 @@ class SyncDaemon:
     
     def _on_glib_signal(self, signum):
         """Handle SIGTERM/SIGINT inside the GTK main loop.
-        
-        This callback runs on the GTK main thread so it's safe to call
-        Gtk.main_quit() and GTK/GLib APIs directly.
+
+        Runs on the GTK main thread via ``GLib.unix_signal_add``. Calling
+        ``Gtk.main_quit()`` *directly* from a unix-signal source does NOT cause
+        ``Gtk.main()`` to return (the loop stays blocked), so the quit is
+        deferred onto an idle callback, which reliably breaks the loop. Control
+        then returns to ``start()`` which calls ``stop()``.
         """
         logger.info(f"Received signal {signum}, shutting down gracefully...")
         self._running = False
-        # Quit the GTK loop — control returns to start() which calls stop()
-        Gtk.main_quit()
+        GLib.idle_add(Gtk.main_quit)
         return GLib.SOURCE_REMOVE
     
     
@@ -543,12 +547,24 @@ class SyncDaemon:
                 # Delete local file/folder if it exists
                 local_path = self.config.sync_directory / path
                 if local_path.exists():
-                    self._move_to_recycle_bin(local_path, path)
+                    trashed = self._move_to_recycle_bin(local_path, path)
                 else:
-                    logger.debug(f"Local path doesn't exist (may have been deleted already): {path}")
-                
-                # Remove from cache and state
-                self.state_mgr.remove_file_entry(path)
+                    trashed = True
+
+                if trashed:
+                    # Remove from cache and state only once the local copy is gone.
+                    self.state_mgr.remove_file_entry(path)
+                    self.state_mgr.clear_deletion_failure(path)
+                else:
+                    # Trash failed and the local file survives. Keep the sync-state
+                    # entry so it is not re-uploaded as a new file. For files, also
+                    # drop the stale cache entry so the next sync sees it as
+                    # local-only and retries the trash (decision -> 'recycle').
+                    # For folders, keep the cache entry: folder reconciliation
+                    # relies on it to retry the deletion.
+                    self.state_mgr.increment_deletion_failure(path)
+                    if not is_folder:
+                        self.state_mgr.remove_cache_entry(path)
                 break
     
     def _verify_and_retry_deletions(self, sync_dir: Path) -> None:
@@ -823,8 +839,15 @@ class SyncDaemon:
         """Handle a file that was deleted remotely."""
         logger.warning(f"File deleted remotely, moving to recycle bin: {rel_path}")
         local_path = validate_sync_path(rel_path, sync_dir)
-        self._move_to_recycle_bin(local_path, rel_path)
-        self.state_mgr.remove_file_entry(rel_path)
+        if self._move_to_recycle_bin(local_path, rel_path):
+            self.state_mgr.remove_file_entry(rel_path)
+            self.state_mgr.clear_deletion_failure(rel_path)
+        else:
+            # Keep the sync-state entry so the surviving local file is not
+            # re-uploaded, but drop the cache entry so the next sync reclassifies
+            # it as local-only and retries the trash (decision -> 'recycle').
+            self.state_mgr.increment_deletion_failure(rel_path)
+            self.state_mgr.remove_cache_entry(rel_path)
     
     def _handle_file_conflict(self, rel_path: str, sync_dir: Path, remote_info: Dict) -> None:
         """Handle a file conflict by keeping both versions."""
@@ -922,10 +945,14 @@ class SyncDaemon:
             try:
                 local_path = validate_sync_path(folder_path, sync_dir)
                 logger.info(f"Folder deleted from OneDrive, removing locally: {folder_path}")
-                self._move_to_recycle_bin(local_path, folder_path)
-                
-                del local_folders[folder_path]
-                self.state_mgr.remove_file_entry(folder_path)
+                if self._move_to_recycle_bin(local_path, folder_path):
+                    del local_folders[folder_path]
+                    self.state_mgr.remove_file_entry(folder_path)
+                    self.state_mgr.clear_deletion_failure(folder_path)
+                else:
+                    # Trash failed; keep the folder tracked so its files are not
+                    # re-uploaded, and retry on a later sync.
+                    self.state_mgr.increment_deletion_failure(folder_path)
             except Exception as e:
                 logger.error(f"Failed to remove local folder {folder_path}: {e}")
     
@@ -967,20 +994,28 @@ class SyncDaemon:
         self.state_mgr.mark_sync_complete()
         self.state_mgr.save()
     
-    def _move_to_recycle_bin(self, local_path: Path, rel_path: str) -> None:
+    def _move_to_recycle_bin(self, local_path: Path, rel_path: str) -> bool:
         """Move file or folder to system recycle bin/trash.
-        
+
         Args:
             local_path: Full path to the local file or folder
             rel_path: Relative path for logging
+
+        Returns:
+            ``True`` if the item is no longer present locally (successfully
+            trashed, or it did not exist). ``False`` if a trash error left the
+            file in place — callers must then keep sync state so the surviving
+            local file is not mistaken for a new file and re-uploaded.
         """
         try:
             if local_path.exists():
-                send2trash(str(local_path))
                 item_type = "folder" if local_path.is_dir() else "file"
+                send2trash(str(local_path))
                 logger.info(f"Moved {item_type} to recycle bin: {rel_path}")
+                return True
             else:
                 logger.warning(f"Item not found for recycling: {rel_path}")
+                return True
         except Exception as e:
             logger.error(f"Failed to move {rel_path} to recycle bin: {e}")
             # Do NOT fall back to permanent deletion — user data must not be lost.
@@ -989,145 +1024,23 @@ class SyncDaemon:
                 f"File left in place (trash unavailable): {rel_path}. "
                 "Resolve manually or ensure trash service is working."
             )
+            return False
     
-    def _determine_sync_action(self, rel_path: str, local_info: Optional[Dict], 
+    def _determine_sync_action(self, rel_path: str, local_info: Optional[Dict],
                                remote_info: Optional[Dict], state_entry: Dict) -> str:
         """Determine what sync action to take for a file.
-        
-        Orchestrates sync decision by delegating to scenario-specific handlers.
-        
-        Args:
-            rel_path: Relative file path
-            local_info: Local file info (or None if doesn't exist locally)
-            remote_info: Remote file info (or None if doesn't exist remotely)
-            state_entry: Last known sync state
-            
+
+        Delegates to :class:`~odsc.sync.decision_engine.SyncDecisionEngine`,
+        passing the set of paths deleted from OneDrive during this sync cycle.
+
         Returns:
             Action: 'upload', 'download', 'conflict', 'recycle', or 'skip'
         """
-        # Check if file was deleted remotely in this sync cycle
-        if hasattr(self, '_deleted_from_remote') and rel_path in self._deleted_from_remote:
-            logger.info(f"{rel_path} was deleted from OneDrive in this sync, moving to recycle bin")
-            return 'recycle'
-        
-        # Delegate to scenario-specific handlers
-        if self._is_local_only(local_info, remote_info):
-            return self._handle_local_only_file(rel_path, state_entry)
-        
-        if self._is_remote_only(local_info, remote_info):
-            return self._handle_remote_only_file(rel_path, state_entry)
-        
-        if self._exists_both_places(local_info, remote_info):
-            return self._handle_file_exists_both(rel_path, local_info, remote_info, state_entry)
-        
-        return 'skip'
-    
-    def _is_local_only(self, local_info: Optional[Dict], remote_info: Optional[Dict]) -> bool:
-        """Check if file exists only locally."""
-        return local_info is not None and remote_info is None
-    
-    def _is_remote_only(self, local_info: Optional[Dict], remote_info: Optional[Dict]) -> bool:
-        """Check if file exists only remotely."""
-        return remote_info is not None and local_info is None
-    
-    def _exists_both_places(self, local_info: Optional[Dict], remote_info: Optional[Dict]) -> bool:
-        """Check if file exists both locally and remotely."""
-        return local_info is not None and remote_info is not None
-    
-    def _handle_local_only_file(self, rel_path: str, state_entry: Dict) -> str:
-        """Handle file that only exists locally.
-        
-        Returns:
-            'upload' if new file, 'recycle' if was deleted remotely
-        """
-        if not state_entry:
-            # Check if file is in cache (was on OneDrive before deletion)
-            if self.state_mgr.get_cache_entry(rel_path) is not None:
-                logger.info(f"{rel_path} was deleted remotely (found in cache), moving to recycle bin")
-                return 'recycle'
-            # Never synced before, upload it
-            return 'upload'
-        
-        if state_entry.get('eTag'):
-            # Was synced before but now missing remotely (deleted remotely)
-            logger.info(f"{rel_path} was deleted remotely, moving to recycle bin")
-            return 'recycle'
-        
-        return 'upload'
-    
-    def _handle_remote_only_file(self, rel_path: str, state_entry: Dict) -> str:
-        """Handle file that only exists remotely.
-        
-        Returns:
-            'skip' - either new remote file (needs manual download) or deleted locally (respect deletion)
-        """
-        if not state_entry:
-            # Never synced before - user must manually download
-            logger.debug(f"{rel_path} is new on OneDrive, awaiting user download")
-            return 'skip'
-        
-        if state_entry.get('downloaded') or state_entry.get('eTag'):
-            # Was synced before but now deleted locally (user deleted)
-            logger.info(f"{rel_path} was deleted locally, keeping deleted")
-            return 'skip'
-        
-        # No clear state, skip (require manual download)
-        return 'skip'
-    
-    def _handle_file_exists_both(self, rel_path: str, local_info: Dict, 
-                                 remote_info: Dict, state_entry: Dict) -> str:
-        """Handle file that exists both locally and remotely.
-        
-        Returns:
-            'upload', 'download', 'conflict', or 'skip'
-        """
-        if not state_entry:
-            # No sync state - handle gracefully
-            return self._handle_untracked_file(rel_path, local_info, remote_info)
-        
-        # Only sync if file was explicitly downloaded by user or uploaded by us
-        if not state_entry.get('downloaded'):
-            logger.debug(f"{rel_path} not marked as downloaded, skipping sync")
-            return 'skip'
-        
-        # Determine what changed
-        local_changed = self._is_local_modified(local_info, state_entry)
-        remote_changed = self._is_remote_modified(remote_info, state_entry)
-        
-        # Decide action based on what changed
-        if local_changed and remote_changed:
-            logger.warning(f"Both local and remote changed: {rel_path}")
-            return 'conflict'
-        elif local_changed:
-            return 'upload'
-        elif remote_changed:
-            return 'download'
-        else:
-            return 'skip'
-    
-    def _handle_untracked_file(self, rel_path: str, local_info: Dict, remote_info: Dict) -> str:
-        """Handle file that exists both places but has no sync state.
-        
-        Could happen if user manually added file that already exists remotely.
-        
-        Returns:
-            'skip' if same size, 'conflict' if different
-        """
-        if local_info['size'] == remote_info['size']:
-            logger.info(f"{rel_path} exists both places with same size, assuming synced")
-            return 'skip'
-        else:
-            return 'conflict'
-    
-    def _is_local_modified(self, local_info: Dict, state_entry: Dict) -> bool:
-        """Check if local file has been modified since last sync."""
-        return (state_entry.get('mtime', 0) != local_info['mtime'] or
-                state_entry.get('size', 0) != local_info['size'])
-    
-    def _is_remote_modified(self, remote_info: Dict, state_entry: Dict) -> bool:
-        """Check if remote file has been modified since last sync."""
-        return (state_entry.get('eTag', '') != remote_info['eTag'] or
-                state_entry.get('remote_modified', '') != remote_info['lastModifiedDateTime'])
+        deleted = getattr(self, '_deleted_from_remote', None)
+        return self.decision_engine.determine_action(
+            rel_path, local_info, remote_info, state_entry, deleted
+        )
+
 
     def _sync_move(self, src_path: Path, dst_path: Path, is_dir: bool = False) -> None:
         """Handle a local rename or move by mirroring it on OneDrive.
@@ -1160,7 +1073,10 @@ class SyncDaemon:
             # Destination is outside the sync folder — treat as local-only deletion
             logger.info(f"Item moved out of sync directory, leaving copy on OneDrive: {src_rel}")
             if is_dir:
-                self.state_mgr.rename_entries_with_prefix(src_rel, "")
+                # Stop tracking the whole subtree. Renaming child paths to an
+                # empty prefix would corrupt state (paths gain a leading
+                # separator and collide at the root), so remove them instead.
+                self.state_mgr.remove_entries_with_prefix(src_rel)
             else:
                 self.state_mgr.remove_file_entry(src_rel)
             self.state_mgr.save()

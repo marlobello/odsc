@@ -130,10 +130,28 @@ class Config:
                 logger.warning(f"Error closing state backend: {e}")
             finally:
                 self._backend = None
-    
-    def __del__(self):
-        """Destructor to ensure backend is closed."""
+
+    def __enter__(self) -> "Config":
+        """Support use as a context manager for deterministic cleanup."""
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+    def __del__(self):
+        """Best-effort backend close if the caller forgot to call close().
+
+        Prefer ``close()`` or a ``with`` block. This runs during garbage
+        collection (possibly at interpreter shutdown) so it must never raise,
+        and it avoids logging because logging machinery may already be torn down.
+        """
+        backend = getattr(self, "_backend", None)
+        if backend is not None:
+            try:
+                backend.close()
+            except Exception:
+                pass
+            self._backend = None
     
     def save(self) -> None:
         """Save configuration to file."""
