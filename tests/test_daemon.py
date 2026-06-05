@@ -32,6 +32,9 @@ class DummyConfig:
     def save_state(self, state):
         self.saved_states.append(state)
 
+    def persist_sync_entry(self, rel_path, entry):
+        self.saved_states.append({"files": {rel_path: entry}})
+
     def load_token(self):
         return {"access_token": "token"}
 

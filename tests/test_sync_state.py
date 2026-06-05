@@ -50,3 +50,45 @@ def test_public_read_methods_return_deep_copies():
 
     assert manager.get_file_entry("folder/file.txt")["nested"]["version"] == 1
     assert manager.get_cache_entry("folder/file.txt")["nested"]["version"] == 1
+
+
+def test_persist_file_uses_incremental_hook():
+    """persist_file should write a single entry, not rewrite the whole DB."""
+    saves = []
+    entries = []
+    mgr = SyncStateManager(
+        lambda: {}, lambda s: saves.append(s), lambda p, e: entries.append((p, e))
+    )
+    mgr.set_file_entry("a.txt", 1.0, 5, {"eTag": "e", "quickXorHash": "H"})
+
+    mgr.persist_file("a.txt")
+
+    assert len(entries) == 1
+    assert entries[0][0] == "a.txt"
+    assert entries[0][1]["quickXorHash"] == "H"
+    assert saves == []  # no full-state rewrite
+
+
+def test_persist_file_falls_back_to_full_save_without_hook():
+    """With no incremental hook, persist_file must still persist via save()."""
+    saves = []
+    mgr = SyncStateManager(lambda: {}, lambda s: saves.append(s))
+    mgr.set_file_entry("a.txt", 1.0, 5, {"eTag": "e"})
+
+    mgr.persist_file("a.txt")
+
+    assert len(saves) == 1
+
+
+def test_persist_file_missing_entry_falls_back_to_save():
+    """A removed entry must be flushed via a full save (so the removal lands)."""
+    saves = []
+    entries = []
+    mgr = SyncStateManager(
+        lambda: {}, lambda s: saves.append(s), lambda p, e: entries.append((p, e))
+    )
+
+    mgr.persist_file("ghost.txt")
+
+    assert entries == []
+    assert len(saves) == 1

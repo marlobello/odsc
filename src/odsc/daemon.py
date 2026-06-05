@@ -145,7 +145,9 @@ class SyncDaemon:
         self._last_update_check: float = 0.0
         self._command_server: Optional[CommandServer] = None
 
-        self.state_mgr = SyncStateManager(self.config.load_state, self.config.save_state)
+        self.state_mgr = SyncStateManager(
+            self.config.load_state, self.config.save_state, self.config.persist_sync_entry
+        )
         self.state_mgr.load()
         self.decision_engine = SyncDecisionEngine(self.state_mgr.get_cache_entry)
         
@@ -1338,21 +1340,21 @@ class SyncDaemon:
             # Suppress redundant uploads (self-write echo after a download, or a
             # no-op touch) when the content hash matches the last synced value.
             if self._upload_is_redundant(str(rel_path), path, mtime, size):
-                self.state_mgr.save()
+                self.state_mgr.persist_file(str(rel_path))
                 return
 
             # Resurrection guard: a remotely-deleted file that lingers locally
             # must not be re-uploaded (unless the user replaced its content).
             if self._resolve_tombstone_before_upload(str(rel_path), path):
-                self.state_mgr.save()
+                self.state_mgr.save()  # entry removed/renamed -> full save
                 return
 
             # Upload file
             metadata = self.client.upload_file(path, str(rel_path))
             
-            # Update state - clear any previous error
+            # Update state - clear any previous error (incremental single-row write)
             self.state_mgr.set_file_entry(str(rel_path), mtime, size, metadata)
-            self.state_mgr.save()
+            self.state_mgr.persist_file(str(rel_path))
             
             logger.info(f"Synced file: {rel_path}")
             
@@ -1368,7 +1370,7 @@ class SyncDaemon:
             except NameError:
                 entry_mtime, entry_size = 0.0, 0
             self.state_mgr.set_file_entry(str(rel_path), entry_mtime, entry_size, error=error_msg)
-            self.state_mgr.save()
+            self.state_mgr.persist_file(str(rel_path))
 
 
 def main():

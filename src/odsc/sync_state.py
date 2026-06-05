@@ -43,9 +43,12 @@ class SyncStateManager:
             (e.g. ``config.save_state``).
     """
 
-    def __init__(self, backend_load, backend_save) -> None:
+    def __init__(self, backend_load, backend_save, backend_persist_entry=None) -> None:
         self._load = backend_load
         self._save = backend_save
+        # Optional incremental hook: persist a single ``files`` entry without a
+        # full-state rewrite. When absent, persist_file() falls back to save().
+        self._persist_entry = backend_persist_entry
         self._lock = threading.Lock()
         self._state: Dict[str, Any] = {}
         self._ensure_initialized()  # guarantee required keys exist from the start
@@ -66,6 +69,21 @@ class SyncStateManager:
         with self._lock:
             snapshot = copy.deepcopy(self._state)
             self._save(snapshot)
+
+    def persist_file(self, rel_path: str) -> None:
+        """Persist a single ``files`` entry incrementally.
+
+        Avoids rewriting the entire state DB on every per-file change. Falls
+        back to a full :meth:`save` when no incremental hook is configured, or
+        when the entry was removed (so the removal is reflected on disk).
+        """
+        with self._lock:
+            entry = self._state["files"].get(rel_path)
+            snapshot = copy.deepcopy(entry) if entry is not None else None
+        if self._persist_entry is not None and snapshot is not None:
+            self._persist_entry(rel_path, snapshot)
+        else:
+            self.save()
 
     def reload(self) -> None:
         """Reload state from the backend under the lock.

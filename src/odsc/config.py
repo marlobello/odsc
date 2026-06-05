@@ -258,6 +258,20 @@ class Config:
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
             raise
+
+    def persist_sync_entry(self, rel_path: str, entry: Dict[str, Any]) -> None:
+        """Persist a single sync-state entry without rewriting the whole DB.
+
+        Used by the hot watchdog path so a per-file change costs one row write
+        instead of a full ~tens-of-thousands-row rewrite.
+        """
+        if self._backend is None:
+            self._init_backend()
+        try:
+            self._backend.set_sync_state(rel_path, entry)
+        except Exception as e:
+            logger.error(f"Failed to persist sync entry {rel_path}: {e}")
+            raise
     
     def load_state(self) -> Dict[str, Any]:
         """Load sync state using backend.
