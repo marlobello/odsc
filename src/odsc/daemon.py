@@ -24,6 +24,7 @@ from .error_handling import log_exception, get_http_status
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
 from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
+from .quickxorhash import extract_quickxorhash
 from .command_socket import CommandServer
 from .sync_state import SyncStateManager
 from .sync import SyncDecisionEngine
@@ -657,6 +658,12 @@ class SyncDaemon:
                 'eTag': item.get('eTag', ''),
                 'lastModifiedDateTime': item.get('lastModifiedDateTime', ''),
             }
+            # Capture OneDrive's content hash when present. Stored additively so
+            # future content-addressed change detection can use it; it does not
+            # affect any current sync decision.
+            quick_xor = extract_quickxorhash(item)
+            if quick_xor:
+                metadata['quickXorHash'] = quick_xor
             
             # Update cache
             self.state_mgr.set_cache_entry(full_path, {**metadata, 'is_folder': False})

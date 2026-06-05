@@ -22,7 +22,7 @@ def is_transient_error(exc: BaseException) -> bool:
         return True
 
     status = get_http_status(exc)
-    return status is not None and status >= 500
+    return status == 429 or (status is not None and status >= 500)
 
 
 def get_log_level(exc: BaseException) -> int:

@@ -7,21 +7,97 @@ import re
 import secrets
 import threading
 import time
+from email.utils import parsedate_to_datetime
 from functools import wraps
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from urllib.parse import urlencode, urlparse
 
 import requests
 import certifi
 from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception, before_sleep_log
+from tenacity.wait import wait_base
 
 from .error_handling import get_http_status, is_transient_error, log_exception
 from .path_utils import SecurityError
 
 
 logger = logging.getLogger(__name__)
+
+RETRY_AFTER_STATUS_CODES = {429, 503}
+MAX_RETRY_AFTER_SECONDS = 300
+
+
+def _parse_retry_after_header(
+    value: Optional[str],
+    now: Optional[datetime] = None,
+    max_delay: int = MAX_RETRY_AFTER_SECONDS,
+) -> float:
+    """Return Retry-After delay seconds, clamped to a safe maximum."""
+    if value is None:
+        return 0.0
+
+    value = value.strip()
+    if not value:
+        return 0.0
+
+    try:
+        delay = float(int(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return 0.0
+
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        if now is None:
+            now = datetime.now(timezone.utc)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        delay = (retry_at - now).total_seconds()
+
+    delay = max(0.0, delay)
+    return min(delay, float(max_delay))
+
+
+def _get_retry_after_delay(exc: BaseException) -> float:
+    """Extract a Retry-After delay from retryable throttling responses."""
+    if get_http_status(exc) not in RETRY_AFTER_STATUS_CODES:
+        return 0.0
+
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    retry_after = None
+    for name, value in headers.items():
+        if name.lower() == "retry-after":
+            retry_after = value
+            break
+    return _parse_retry_after_header(retry_after)
+
+
+class _RetryAfterWait(wait_base):
+    """Tenacity wait strategy that honors Graph Retry-After throttling."""
+
+    def __init__(self, fallback_wait: Callable[[Any], float]) -> None:
+        self._fallback_wait = fallback_wait
+
+    def __call__(self, retry_state: Any) -> float:
+        fallback_delay = self._fallback_wait(retry_state)
+        outcome = getattr(retry_state, "outcome", None)
+        if outcome is None:
+            return fallback_delay
+
+        exc = outcome.exception()
+        if exc is None:
+            return fallback_delay
+
+        retry_after_delay = _get_retry_after_delay(exc)
+        return max(fallback_delay, retry_after_delay)
+
+
+GRAPH_RETRY_WAIT = _RetryAfterWait(wait_random_exponential(multiplier=1, min=1, max=10))
 
 
 class OneDriveClient:
@@ -459,7 +535,7 @@ class OneDriveClient:
     
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_random_exponential(multiplier=1, min=1, max=10),
+        wait=GRAPH_RETRY_WAIT,
         retry=retry_if_exception(is_transient_error),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True
@@ -515,7 +591,7 @@ class OneDriveClient:
     
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_random_exponential(multiplier=1, min=1, max=10),
+        wait=GRAPH_RETRY_WAIT,
         retry=retry_if_exception(is_transient_error),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True

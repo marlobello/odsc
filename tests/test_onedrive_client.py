@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Tests for OneDrive client download behavior."""
 
-import pytest
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 
-from odsc.onedrive_client import OneDriveClient
+import pytest
+import requests
+
+from odsc.error_handling import is_transient_error
+from odsc.onedrive_client import OneDriveClient, _RetryAfterWait, _parse_retry_after_header
 
 
 class FakeResponse:
@@ -93,3 +98,43 @@ def test_api_request_uses_cached_access_token(monkeypatch):
     client._api_request("GET", "/me")
 
     assert captured["authorization"] == "Bearer token"
+
+
+def _http_error(status_code, headers=None):
+    response = requests.Response()
+    response.status_code = status_code
+    response.headers.update(headers or {})
+    return requests.exceptions.HTTPError("request failed", response=response)
+
+
+def test_http_429_is_transient_error():
+    """Graph throttling responses should be retried."""
+    assert is_transient_error(_http_error(429))
+
+
+def test_parse_retry_after_header_seconds_date_past_and_cap():
+    """Retry-After supports delay-seconds and HTTP-date values."""
+    now = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    future = format_datetime(now + timedelta(seconds=45), usegmt=True)
+    past = format_datetime(now - timedelta(seconds=5), usegmt=True)
+
+    assert _parse_retry_after_header("42", now=now) == 42.0
+    assert _parse_retry_after_header(future, now=now) == 45.0
+    assert _parse_retry_after_header(past, now=now) == 0.0
+    assert _parse_retry_after_header("999", now=now, max_delay=300) == 300.0
+
+
+def test_retry_after_wait_honors_429_retry_after_header():
+    """Tenacity wait should be at least the server's Retry-After delay."""
+    error = _http_error(429, {"Retry-After": "12"})
+
+    class FakeOutcome:
+        def exception(self):
+            return error
+
+    class FakeRetryState:
+        outcome = FakeOutcome()
+
+    wait_strategy = _RetryAfterWait(lambda retry_state: 1.0)
+
+    assert wait_strategy(FakeRetryState()) >= 12.0
