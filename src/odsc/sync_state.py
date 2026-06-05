@@ -16,6 +16,8 @@ State Structure
     OneDrive delta query continuation token.
 ``last_sync``
     ISO-8601 timestamp of the last completed sync.
+``conflicts``
+    Per-path record of unresolved file conflicts.
 ``_deletion_failures``
     Per-path counter of consecutive local-deletion failures.
 """
@@ -254,6 +256,44 @@ class SyncStateManager:
             self._state.get("_deletion_failures", {}).pop(path, None)
 
     # ------------------------------------------------------------------ #
+    # Conflict tracking                                                    #
+    # ------------------------------------------------------------------ #
+
+    def add_conflict(self, original_path: str, conflict_path: str,
+                     remote_info: Optional[Dict[str, Any]] = None) -> None:
+        """Record an unresolved conflict for *original_path*.
+
+        Args:
+            original_path: The relative path of the file that conflicted.
+            conflict_path: The relative path of the .conflict copy.
+            remote_info: Optional OneDrive metadata of the remote version.
+        """
+        with self._lock:
+            conflicts = self._state.setdefault("conflicts", {})
+            conflicts[original_path] = {
+                "conflict_path": conflict_path,
+                "detected_at": datetime.now().isoformat(),
+                "remote_modified": (
+                    remote_info.get("lastModifiedDateTime", "") if remote_info else ""
+                ),
+            }
+
+    def remove_conflict(self, original_path: str) -> None:
+        """Clear the conflict record for *original_path*."""
+        with self._lock:
+            self._state.get("conflicts", {}).pop(original_path, None)
+
+    def all_conflicts(self) -> Dict[str, Dict[str, Any]]:
+        """Return a snapshot of all unresolved conflicts."""
+        with self._lock:
+            return copy.deepcopy(self._state.get("conflicts", {}))
+
+    def conflict_count(self) -> int:
+        """Return the number of unresolved conflicts."""
+        with self._lock:
+            return len(self._state.get("conflicts", {}))
+
+    # ------------------------------------------------------------------ #
     # Internal                                                             #
     # ------------------------------------------------------------------ #
 
@@ -263,3 +303,5 @@ class SyncStateManager:
             self._state["files"] = {}
         if "file_cache" not in self._state:
             self._state["file_cache"] = {}
+        if "conflicts" not in self._state:
+            self._state["conflicts"] = {}

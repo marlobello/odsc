@@ -242,6 +242,30 @@ def cmd_update(args):
     return 0
 
 
+def cmd_conflicts(args):
+    """List unresolved file conflicts."""
+    config = Config()
+    state = config.load_state() or {}
+    conflicts = state.get("conflicts", {})
+
+    if not conflicts:
+        print("✓ No unresolved conflicts.")
+        return 0
+
+    print(f"⚠  {len(conflicts)} unresolved conflict(s):\n")
+    for original, info in conflicts.items():
+        conflict_path = info.get("conflict_path", "?")
+        detected = info.get("detected_at", "unknown")
+        print(f"  {original}")
+        print(f"    Remote copy: {conflict_path}")
+        print(f"    Detected:    {detected}")
+        print()
+
+    print("To resolve: keep the version you want at the original path")
+    print("and delete the .conflict file. The conflict will auto-clear.")
+    return 0
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -273,6 +297,10 @@ def main():
     # Update command
     update_parser = subparsers.add_parser('update', help='Check for and install updates')
     update_parser.set_defaults(func=cmd_update)
+
+    # Conflicts command
+    conflicts_parser = subparsers.add_parser('conflicts', help='List unresolved file conflicts')
+    conflicts_parser.set_defaults(func=cmd_conflicts)
 
     args = parser.parse_args()
     

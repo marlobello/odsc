@@ -295,6 +295,13 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
         self.status_label.set_markup("<i>Status: Ready</i>")
         self.status_label.set_halign(Gtk.Align.END)
         button_box.pack_end(self.status_label, False, False, 6)
+
+        # Conflict warning indicator (hidden by default)
+        self.conflict_button = Gtk.Button()
+        self.conflict_button.set_relief(Gtk.ReliefStyle.NONE)
+        self.conflict_button.connect("clicked", self._on_conflict_button_clicked)
+        self.conflict_button.set_no_show_all(True)
+        button_box.pack_end(self.conflict_button, False, False, 6)
         
         self._create_log_panel()
         
@@ -304,6 +311,7 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
             self._load_remote_files()
         
         GLib.timeout_add_seconds(2, self._check_service_status)
+        GLib.timeout_add_seconds(10, self._check_conflicts)
     
     def _create_log_panel(self) -> None:
         """Create the log panel (initially hidden)."""
@@ -908,3 +916,54 @@ class OneDriveGUI(MenuBarMixin, FileTreeViewMixin, FileOperationsMixin, Gtk.Appl
             title = "Error"
             
         DialogHelper.show_error(self, title, message)
+
+    # ------------------------------------------------------------------ #
+    # Conflict indicator                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _check_conflicts(self) -> bool:
+        """Periodically check for unresolved conflicts and update UI."""
+        try:
+            state = self.config.load_state() or {}
+            conflicts = state.get("conflicts", {})
+            count = len(conflicts)
+            if count > 0:
+                label = f"⚠ {count} conflict{'s' if count != 1 else ''}"
+                self.conflict_button.set_label(label)
+                self.conflict_button.show()
+            else:
+                self.conflict_button.hide()
+        except Exception as e:
+            logger.debug(f"Error checking conflicts: {e}")
+        return True  # keep timer running
+
+    def _on_conflict_button_clicked(self, widget) -> None:
+        """Show dialog listing unresolved conflicts."""
+        state = self.config.load_state() or {}
+        conflicts = state.get("conflicts", {})
+
+        if not conflicts:
+            DialogHelper.show_info(self, "No Conflicts", "All conflicts have been resolved.")
+            return
+
+        lines = []
+        for original, info in conflicts.items():
+            conflict_path = info.get("conflict_path", "?")
+            detected = info.get("detected_at", "unknown")
+            lines.append(f"<b>{html.escape(original)}</b>")
+            lines.append(f"  Remote copy: {html.escape(conflict_path)}")
+            lines.append(f"  Detected: {html.escape(detected)}")
+            lines.append("")
+
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.WARNING,
+            buttons=Gtk.ButtonsType.CLOSE,
+            text=f"{len(conflicts)} Unresolved Conflict{'s' if len(conflicts) != 1 else ''}",
+        )
+        dialog.format_secondary_markup(
+            "\n".join(lines) + "\nTo resolve: keep the version you want and delete the .conflict file."
+        )
+        dialog.run()
+        dialog.destroy()

@@ -829,13 +829,54 @@ class SyncDaemon:
     def _handle_file_conflict(self, rel_path: str, sync_dir: Path, remote_info: Dict) -> None:
         """Handle a file conflict by keeping both versions."""
         logger.warning(f"CONFLICT detected for {rel_path} - keeping both versions")
-        conflict_rel = f"{rel_path}.conflict"
+        conflict_rel = self._next_conflict_name(rel_path, sync_dir)
         conflict_path = validate_sync_path(conflict_rel, sync_dir)
         metadata = self.client.download_file(
             remote_info['id'], conflict_path,
             chunk_size=self.config.download_chunk_size,
         )
         logger.info(f"Saved remote version as: {conflict_path}")
+        self.state_mgr.add_conflict(rel_path, conflict_rel, remote_info)
+        self._notify_conflict(rel_path)
+
+    def _notify_conflict(self, rel_path: str) -> None:
+        """Send a desktop notification about a file conflict."""
+        try:
+            import subprocess
+            subprocess.run(
+                ["notify-send", "--app-name=ODSC", "ODSC: File Conflict",
+                 f"Both local and remote versions of '{rel_path}' have changed.\n"
+                 "Both copies have been kept. Check for .conflict files."],
+                check=False, timeout=5,
+            )
+        except Exception as exc:
+            logger.debug(f"Could not show conflict notification: {exc}")
+
+    def _next_conflict_name(self, rel_path: str, sync_dir: Path) -> str:
+        """Generate a unique .conflict filename that doesn't already exist.
+
+        Returns:
+            Relative path like 'file.txt.conflict' or 'file.txt.conflict.2'
+        """
+        candidate = f"{rel_path}.conflict"
+        if not (sync_dir / candidate).exists():
+            return candidate
+        n = 1
+        while True:
+            n += 1
+            candidate = f"{rel_path}.conflict.{n}"
+            if not (sync_dir / candidate).exists():
+                return candidate
+
+    def _maybe_clear_conflict(self, rel_path: str) -> None:
+        """Clear a conflict record if the deleted file was a .conflict file."""
+        conflicts = self.state_mgr.all_conflicts()
+        for original, info in conflicts.items():
+            if info.get("conflict_path") == rel_path:
+                logger.info(f"Conflict resolved (conflict file removed): {original}")
+                self.state_mgr.remove_conflict(original)
+                self.state_mgr.save()
+                return
     
     def _sync_folders(self, sync_dir: Path, local_folders: Dict, all_remote_folders: Dict) -> None:
         """Sync folders between local and remote."""
@@ -1183,6 +1224,8 @@ class SyncDaemon:
         if not path.exists():
             # File was deleted - we don't auto-delete from OneDrive
             logger.info(f"File deleted locally (not deleting from OneDrive): {rel_path}")
+            # Auto-clear conflict if a .conflict file was removed
+            self._maybe_clear_conflict(str(rel_path))
             return
         
         try:
