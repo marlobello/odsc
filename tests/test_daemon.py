@@ -228,3 +228,65 @@ def test_sync_file_records_upload_errors(monkeypatch, config):
     assert entry["size"] == len("local contents")
     assert config.saved_states
 
+
+
+def test_command_socket_sync_forces_full_sync(monkeypatch, config):
+    """The command-socket SYNC request must trigger an immediate full sync,
+    even when the periodic interval has not elapsed and no .force_sync file exists."""
+    daemon = daemon_module.SyncDaemon(config)
+    daemon._running = True
+    daemon.event_handler = types.SimpleNamespace(
+        get_pending_moves=Mock(return_value={}),
+        get_pending_changes=Mock(return_value=set()),
+    )
+
+    # Simulate the command-socket SYNC callback.
+    daemon._on_force_sync_requested()
+    assert daemon._force_sync_requested.is_set()
+
+    periodic_calls = []
+    monkeypatch.setattr(daemon, "_check_force_sync_signal", lambda: False)
+    monkeypatch.setattr(daemon, "_should_do_periodic_sync", lambda: False)
+    monkeypatch.setattr(daemon, "_do_periodic_sync", lambda: periodic_calls.append(True))
+
+    def stop_after():
+        daemon._running = False
+
+    monkeypatch.setattr(daemon, "_check_for_updates", stop_after)
+
+    daemon._sync_loop()
+
+    assert periodic_calls == [True]  # full sync ran
+    assert not daemon._force_sync_requested.is_set()  # flag was consumed
+
+
+def test_fetch_preserves_delta_token_on_transient_error(config):
+    """A transient delta-query failure must preserve the existing delta token."""
+    daemon = daemon_module.SyncDaemon(config)
+    daemon.state_mgr.delta_token = "tok-123"
+    daemon.client = types.SimpleNamespace(
+        get_delta=Mock(side_effect=ConnectionError("network down"))
+    )
+
+    result = daemon._fetch_and_process_remote_changes(config.sync_directory)
+
+    assert result is None
+    assert daemon.state_mgr.delta_token == "tok-123"  # preserved for incremental retry
+
+
+def test_fetch_resets_delta_token_on_410(config):
+    """An HTTP 410 (resyncRequired) must reset the delta token for a full resync."""
+    import requests
+
+    daemon = daemon_module.SyncDaemon(config)
+    daemon.state_mgr.delta_token = "tok-123"
+
+    response = requests.Response()
+    response.status_code = 410
+    error = requests.exceptions.HTTPError(response=response)
+    daemon.client = types.SimpleNamespace(get_delta=Mock(side_effect=error))
+
+    result = daemon._fetch_and_process_remote_changes(config.sync_directory)
+
+    assert result is None
+    assert daemon.state_mgr.delta_token is None  # reset to force full resync

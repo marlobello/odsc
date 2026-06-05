@@ -20,7 +20,7 @@ from send2trash import send2trash
 
 from . import __version__
 from .config import Config
-from .error_handling import log_exception
+from .error_handling import log_exception, get_http_status
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
 from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
@@ -137,6 +137,10 @@ class SyncDaemon:
         self._sync_thread: Optional[threading.Thread] = None
         self.system_tray: Optional['SystemTrayIndicator'] = None
         self._wakeup_event = threading.Event()
+        # Set when an immediate full sync is requested (e.g. via the command
+        # socket SYNC command), as opposed to merely waking the loop to process
+        # pending watchdog changes.
+        self._force_sync_requested = threading.Event()
         self._last_update_check: float = 0.0
         self._command_server: Optional[CommandServer] = None
 
@@ -333,8 +337,9 @@ class SyncDaemon:
                     for path in pending:
                         self._sync_file(path)
                 
-                # Check for force sync signal
-                if self._check_force_sync_signal():
+                # Check for force sync signal (command socket or legacy file)
+                if self._force_sync_requested.is_set() or self._check_force_sync_signal():
+                    self._force_sync_requested.clear()
                     logger.info("Force sync triggered by user")
                     self._do_periodic_sync()
                 # Periodic full sync check
@@ -376,6 +381,8 @@ class SyncDaemon:
     
     def _on_force_sync_requested(self) -> None:
         """Callback from command socket when SYNC command received."""
+        # Request a full sync (not just a wakeup) and break the wait loop.
+        self._force_sync_requested.set()
         self._wakeup_event.set()
 
     def _check_force_sync_signal(self) -> bool:
@@ -506,8 +513,21 @@ class SyncDaemon:
             self.state_mgr.delta_token = new_delta_token
             
         except Exception as exc:
-            self._log_operation_error("Failed to fetch changes", exc, exc_info=True)
-            self.state_mgr.delta_token = None
+            if get_http_status(exc) == 410:
+                # HTTP 410 Gone (resyncRequired): the delta token is no longer
+                # valid, so it MUST be reset to force a full resync next cycle.
+                logger.warning(
+                    "Delta token rejected by OneDrive (HTTP 410); "
+                    "resetting for a full resync"
+                )
+                self.state_mgr.delta_token = None
+            else:
+                # Transient/other failure: preserve the existing delta token so
+                # the next cycle resumes incrementally. Clearing it here would
+                # force a full resync whose from-scratch delta carries no
+                # deletion tombstones, which can cause remote deletions to be
+                # missed and stale cache entries to survive.
+                self._log_operation_error("Failed to fetch changes", exc, exc_info=True)
             return None
         
         # Process changes
