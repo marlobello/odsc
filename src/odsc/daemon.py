@@ -24,7 +24,7 @@ from .error_handling import log_exception, get_http_status
 from .onedrive_client import OneDriveClient
 from .logging_config import setup_logging
 from .path_utils import sanitize_onedrive_path, validate_sync_path, extract_item_path, SecurityError
-from .quickxorhash import extract_quickxorhash
+from .quickxorhash import extract_quickxorhash, quickxorhash_file
 from .command_socket import CommandServer
 from .sync_state import SyncStateManager
 from .sync import SyncDecisionEngine
@@ -835,8 +835,34 @@ class SyncDaemon:
         elif action == 'skip':
             logger.debug(f"Skipping (up to date): {rel_path}")
     
+    def _upload_is_redundant(self, rel_path: str, local_path: Path, mtime: float, size: int) -> bool:
+        """Return True if the local file's content matches the last synced hash.
+
+        This suppresses redundant uploads — most importantly the self-write echo
+        where downloading a file triggers a watchdog event that would otherwise
+        re-upload identical content, and no-op touches that only change mtime.
+        On a match the recorded mtime/size are refreshed so future cycles
+        short-circuit cheaply. Never skips a real content change: if no hash was
+        recorded, or it differs, or hashing fails, the upload proceeds.
+        """
+        state_entry = self.state_mgr.get_file_entry(rel_path)
+        stored_hash = state_entry.get('quickXorHash') if state_entry else None
+        if not stored_hash:
+            return False
+        try:
+            local_hash = quickxorhash_file(local_path)
+        except OSError:
+            return False
+        if local_hash == stored_hash:
+            logger.debug(f"Content unchanged (hash match), skipping upload: {rel_path}")
+            self.state_mgr.mark_file_unchanged(rel_path, mtime, size)
+            return True
+        return False
+
     def _upload_file(self, rel_path: str, local_info: Dict) -> None:
         """Upload a local file to OneDrive."""
+        if self._upload_is_redundant(rel_path, local_info['path'], local_info['mtime'], local_info['size']):
+            return
         logger.info(f"Uploading: {rel_path}")
         try:
             metadata = self.client.upload_file(local_info['path'], rel_path)
@@ -1179,6 +1205,12 @@ class SyncDaemon:
                 size = path.stat().st_size
             except FileNotFoundError:
                 logger.info(f"File vanished before upload, skipping: {rel_path}")
+                return
+
+            # Suppress redundant uploads (self-write echo after a download, or a
+            # no-op touch) when the content hash matches the last synced value.
+            if self._upload_is_redundant(str(rel_path), path, mtime, size):
+                self.state_mgr.save()
                 return
 
             # Upload file

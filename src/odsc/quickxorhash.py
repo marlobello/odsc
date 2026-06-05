@@ -119,7 +119,12 @@ def quickxorhash_file(path: Path, chunk_size: int = 1 << 20) -> str:
 
 
 def extract_quickxorhash(item: dict) -> "str | None":
-    """Pull ``quickXorHash`` out of a Graph item's metadata, if present."""
+    """Pull ``quickXorHash`` out of a Graph item's metadata, if present.
+
+    Handles the full Graph shape (``item['file']['hashes']['quickXorHash']``),
+    a top-level ``hashes`` dict, and the flat ``quickXorHash`` key that ODSC
+    stores in its reduced cache/state entries.
+    """
     if not isinstance(item, dict):
         return None
     file_facet = item.get("file")
@@ -129,8 +134,10 @@ def extract_quickxorhash(item: dict) -> "str | None":
             value = hashes.get("quickXorHash")
             if value:
                 return value
-    # Some reduced/cached shapes may store hashes at the top level.
     hashes = item.get("hashes")
     if isinstance(hashes, dict):
-        return hashes.get("quickXorHash") or None
-    return None
+        value = hashes.get("quickXorHash")
+        if value:
+            return value
+    # Flat key (ODSC reduced cache/state shape).
+    return item.get("quickXorHash") or None

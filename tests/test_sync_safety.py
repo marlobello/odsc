@@ -288,3 +288,70 @@ def test_upload_session_error_redacts_upload_url(tmp_path, monkeypatch):
 
     assert "SECRET123" not in str(exc_info.value)
     assert "<redacted-upload-url>" in str(exc_info.value)
+
+
+# --------------------------------------------------------------------------- #
+# Content-hash upload guard (echo suppression / no-op touch)                   #
+# --------------------------------------------------------------------------- #
+
+def test_upload_skipped_when_content_hash_matches(daemon):
+    """A file whose content matches the last synced hash must not be re-uploaded
+    (prevents the download->watchdog->upload echo and no-op touch uploads)."""
+    from odsc.quickxorhash import quickxorhash_file
+
+    rel = "file.txt"
+    local = daemon.config.sync_directory / rel
+    local.write_bytes(b"stable content")
+    h = quickxorhash_file(local)
+    # Simulate a prior sync that recorded this exact content hash.
+    daemon.state_mgr.set_file_entry(rel, mtime=1.0, size=14, metadata={"eTag": "e", "quickXorHash": h})
+
+    uploaded = []
+    daemon.client = types.SimpleNamespace(upload_file=lambda *a, **k: uploaded.append(a) or {})
+
+    # A later touch changes mtime/size record but not content.
+    daemon._upload_file(rel, {"path": local, "mtime": 999.0, "size": 14})
+
+    assert uploaded == []  # upload suppressed
+    # mtime refreshed so future cycles short-circuit cheaply.
+    assert daemon.state_mgr.get_file_entry(rel)["mtime"] == 999.0
+
+
+def test_upload_proceeds_when_content_changed(daemon):
+    """A real content change (hash differs) must still upload."""
+    from odsc.quickxorhash import quickxorhash_file
+
+    rel = "file.txt"
+    local = daemon.config.sync_directory / rel
+    local.write_bytes(b"original")
+    old_hash = quickxorhash_file(local)
+    daemon.state_mgr.set_file_entry(rel, mtime=1.0, size=8, metadata={"eTag": "e", "quickXorHash": old_hash})
+
+    # Now the file content actually changes.
+    local.write_bytes(b"edited content!!")
+
+    uploaded = []
+    daemon.client = types.SimpleNamespace(
+        upload_file=lambda *a, **k: uploaded.append(a) or {"eTag": "e2"}
+    )
+
+    daemon._upload_file(rel, {"path": local, "mtime": 2.0, "size": 16})
+
+    assert len(uploaded) == 1  # real change uploaded
+
+
+def test_upload_proceeds_when_no_hash_recorded(daemon):
+    """Without a recorded hash (legacy entries), uploads must proceed unchanged."""
+    rel = "file.txt"
+    local = daemon.config.sync_directory / rel
+    local.write_bytes(b"data")
+    daemon.state_mgr.set_file_entry(rel, mtime=1.0, size=4, metadata={"eTag": "e"})  # no hash
+
+    uploaded = []
+    daemon.client = types.SimpleNamespace(
+        upload_file=lambda *a, **k: uploaded.append(a) or {"eTag": "e2"}
+    )
+
+    daemon._upload_file(rel, {"path": local, "mtime": 2.0, "size": 4})
+
+    assert len(uploaded) == 1

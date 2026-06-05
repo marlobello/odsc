@@ -28,6 +28,8 @@ import threading
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
+from .quickxorhash import extract_quickxorhash
+
 logger = logging.getLogger(__name__)
 
 
@@ -131,10 +133,30 @@ class SyncStateManager:
             entry["remote_modified"] = (
                 metadata.get("lastModifiedDateTime", "") if metadata else ""
             )
+            # Record OneDrive's content hash so future syncs can detect real
+            # content changes (and suppress self-write/touch echo) instead of
+            # relying on mtime/size alone.
+            quick_xor = extract_quickxorhash(metadata) if metadata else None
+            if quick_xor:
+                entry["quickXorHash"] = quick_xor
             entry["upload_error"] = None
 
         with self._lock:
             self._state["files"][rel_path] = entry
+
+    def mark_file_unchanged(self, rel_path: str, mtime: float, size: int) -> None:
+        """Refresh the recorded mtime/size for an existing entry in place.
+
+        Used after a content-hash comparison shows a file did not actually
+        change (e.g. a touch or a self-write echo): update mtime/size so future
+        cycles short-circuit on the cheap mtime/size check, while preserving
+        ``eTag``/``quickXorHash``/``remote_modified``/``downloaded``.
+        """
+        with self._lock:
+            entry = self._state["files"].get(rel_path)
+            if entry is not None:
+                entry["mtime"] = mtime
+                entry["size"] = size
 
     def remove_file_entry(self, rel_path: str) -> None:
         """Remove *rel_path* from both ``files`` and ``file_cache``."""
