@@ -539,3 +539,20 @@ def test_remote_folder_cached_with_is_folder_flag(daemon):
     folders = daemon.state_mgr.all_remote_folders()
     assert "_odsc_selftest" in folders  # would be EXCLUDED before the fix
     assert daemon.state_mgr.get_cache_entry("_odsc_selftest") is not None
+
+
+def test_prune_resolved_conflicts_clears_stale_records(daemon):
+    """A conflict whose .conflict file is gone (e.g. removed while stopped) is cleared,
+    while one whose .conflict file still exists is kept."""
+    sync_dir = daemon.config.sync_directory
+    # Stale: no .conflict file on disk.
+    daemon.state_mgr.add_conflict("gone.txt", "gone.txt.conflict")
+    # Active: .conflict file present.
+    (sync_dir / "live.txt.conflict").write_text("remote version")
+    daemon.state_mgr.add_conflict("live.txt", "live.txt.conflict")
+
+    daemon._prune_resolved_conflicts(sync_dir)
+
+    conflicts = daemon.state_mgr.all_conflicts()
+    assert "gone.txt" not in conflicts   # stale record pruned
+    assert "live.txt" in conflicts       # active conflict retained

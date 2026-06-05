@@ -495,11 +495,25 @@ class SyncDaemon:
         # Now sync files (folders already exist)
         all_remote_files = self._get_all_remote_files()
         self._sync_files(sync_dir, local_files, remote_files, all_remote_files)
-        
+
+        # Self-heal conflict records whose .conflict file is no longer present
+        # (e.g. resolved/removed while the daemon was stopped, so no watchdog
+        # delete event fired). Conflicts persist across restarts, so without this
+        # such records would linger in the GUI indefinitely.
+        self._prune_resolved_conflicts(sync_dir)
+
         # Finalize sync
         self._finalize_sync()
         
         logger.info("Periodic sync completed")
+
+    def _prune_resolved_conflicts(self, sync_dir: Path) -> None:
+        """Clear conflict records whose ``.conflict`` file no longer exists locally."""
+        for original, info in self.state_mgr.all_conflicts().items():
+            conflict_rel = info.get("conflict_path")
+            if conflict_rel and not (sync_dir / conflict_rel).exists():
+                logger.info(f"Conflict cleared (conflict file no longer present): {original}")
+                self.state_mgr.remove_conflict(original)
     
     def _fetch_and_process_remote_changes(self, sync_dir: Path) -> Optional[Dict[str, Any]]:
         """Fetch changes from OneDrive and process them.
