@@ -442,3 +442,83 @@ def test_remote_file_reappearance_clears_tombstone(daemon):
     }
     daemon._process_remote_file(item, daemon.config.sync_directory)
     assert daemon.state_mgr.get_tombstone(rel) is None
+
+
+# --------------------------------------------------------------------------- #
+# Offline move detection (server-side PATCH instead of upload+orphan)          #
+# --------------------------------------------------------------------------- #
+
+def test_offline_move_detected_and_applied(daemon):
+    """A file moved while offline is PATCH-moved on OneDrive, not re-uploaded."""
+    from odsc.quickxorhash import quickxorhash_file
+
+    sync_dir = daemon.config.sync_directory
+    # New local file at the destination path with known content.
+    (sync_dir / "Photos").mkdir(parents=True, exist_ok=True)
+    dst = sync_dir / "Photos" / "moved.jpg"
+    dst.write_bytes(b"image bytes here")
+    h = quickxorhash_file(dst)
+    size = dst.stat().st_size
+
+    # Source: a previously-synced remote file (same content) now absent locally.
+    daemon.state_mgr.set_cache_entry("old.jpg", {"id": "ITEM1", "size": size, "eTag": "e", "quickXorHash": h})
+    daemon.state_mgr.set_file_entry("old.jpg", mtime=1.0, size=size, metadata={"eTag": "e", "quickXorHash": h})
+
+    moves = []
+    daemon.client = types.SimpleNamespace(
+        move_item=lambda item_id, new_name, new_parent: moves.append((item_id, new_name, new_parent)) or {"id": item_id}
+    )
+
+    local_files = {"Photos/moved.jpg": {"path": dst, "mtime": 2.0, "size": size}}
+    daemon._detect_and_apply_moves(sync_dir, local_files)
+
+    assert moves == [("ITEM1", "moved.jpg", "Photos")]   # PATCH move issued
+    # State now tracks the new path, old path gone.
+    assert daemon.state_mgr.get_file_entry("Photos/moved.jpg") != {}
+    assert daemon.state_mgr.get_file_entry("old.jpg") == {}
+
+
+def test_no_false_move_on_different_content(daemon):
+    """A new local file whose content differs is not treated as a move."""
+    from odsc.quickxorhash import quickxorhash_file
+
+    sync_dir = daemon.config.sync_directory
+    dst = sync_dir / "new.bin"
+    dst.write_bytes(b"completely different content")
+    size = dst.stat().st_size
+    # A remote orphan of the SAME SIZE but different hash.
+    daemon.state_mgr.set_cache_entry("old.bin", {"id": "ITEM2", "size": size, "eTag": "e", "quickXorHash": "DIFFERENT_HASH"})
+    daemon.state_mgr.set_file_entry("old.bin", mtime=1.0, size=size, metadata={"eTag": "e", "quickXorHash": "DIFFERENT_HASH"})
+
+    moves = []
+    daemon.client = types.SimpleNamespace(move_item=lambda *a, **k: moves.append(a))
+
+    daemon._detect_and_apply_moves(sync_dir, {"new.bin": {"path": dst, "mtime": 2.0, "size": size}})
+
+    assert moves == []  # size matched but hash did not -> no move
+
+
+def test_no_move_when_old_path_still_present_locally(daemon):
+    """A copy (old path still local) must not be mis-detected as a move."""
+    from odsc.quickxorhash import quickxorhash_file
+
+    sync_dir = daemon.config.sync_directory
+    old = sync_dir / "orig.txt"
+    old.write_bytes(b"shared content")
+    new = sync_dir / "copy.txt"
+    new.write_bytes(b"shared content")
+    h = quickxorhash_file(old)
+    size = old.stat().st_size
+    daemon.state_mgr.set_cache_entry("orig.txt", {"id": "ITEM3", "size": size, "eTag": "e", "quickXorHash": h})
+    daemon.state_mgr.set_file_entry("orig.txt", mtime=1.0, size=size, metadata={"eTag": "e", "quickXorHash": h})
+
+    moves = []
+    daemon.client = types.SimpleNamespace(move_item=lambda *a, **k: moves.append(a))
+
+    local_files = {
+        "orig.txt": {"path": old, "mtime": 1.0, "size": size},   # source still present locally
+        "copy.txt": {"path": new, "mtime": 2.0, "size": size},
+    }
+    daemon._detect_and_apply_moves(sync_dir, local_files)
+
+    assert moves == []  # orig still present -> it's a copy, not a move

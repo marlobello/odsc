@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, Any, Set, Optional
+from typing import Dict, Any, Set, Optional, List
 from datetime import datetime
 
 from watchdog.observers import Observer
@@ -483,7 +483,13 @@ class SyncDaemon:
         # IMPORTANT: Sync folders FIRST before files
         # This ensures parent folders exist before uploading files
         self._sync_folders(sync_dir, local_folders, all_remote_folders)
-        
+
+        # Detect files moved/renamed while the daemon was offline and mirror
+        # them as server-side moves (content-identity match) instead of
+        # re-uploading + orphaning a duplicate. Runs after folder sync so move
+        # destinations' parent folders already exist remotely.
+        self._detect_and_apply_moves(sync_dir, local_files)
+
         # Now sync files (folders already exist)
         all_remote_files = self._get_all_remote_files()
         self._sync_files(sync_dir, local_files, remote_files, all_remote_files)
@@ -851,6 +857,79 @@ class SyncDaemon:
         elif action == 'skip':
             logger.debug(f"Skipping (up to date): {rel_path}")
     
+    def _detect_and_apply_moves(self, sync_dir: Path, local_files: Dict) -> None:
+        """Mirror offline file moves/renames as server-side moves on OneDrive.
+
+        A move performed while the daemon was down appears next sync as the old
+        path missing locally (but still on OneDrive) plus a new local path not
+        yet on OneDrive. Re-uploading the new path while leaving the old one
+        duplicates the file on OneDrive and re-transfers its bytes. When a
+        previously-synced remote file's content (size + QuickXorHash) matches a
+        new local file, issue a single PATCH move instead.
+
+        This relocates the existing OneDrive item — it never deletes data from
+        OneDrive. If the move fails (e.g. a name collision), the new path simply
+        falls through to a normal upload (no regression).
+        """
+        all_remote = self.state_mgr.all_remote_files()
+
+        # Source candidates: previously-synced remote files now absent locally,
+        # indexed by size, requiring a known content hash for a safe match.
+        sources_by_size: Dict[int, List[tuple]] = {}
+        for rpath, meta in all_remote.items():
+            if rpath in local_files:
+                continue
+            state = self.state_mgr.get_file_entry(rpath)
+            if not (state.get('downloaded') or state.get('eTag')):
+                continue  # never had a local copy -> not a move source
+            rhash = meta.get('quickXorHash')
+            if not rhash or not meta.get('id'):
+                continue  # need a content hash + id to move safely
+            sources_by_size.setdefault(meta.get('size'), []).append((rpath, meta, rhash))
+
+        if not sources_by_size:
+            return
+
+        for lpath, info in list(local_files.items()):
+            if lpath in all_remote:
+                continue
+            state = self.state_mgr.get_file_entry(lpath)
+            if state.get('eTag') or state.get('downloaded'):
+                continue  # already tracked -> not a fresh move destination
+            candidates = sources_by_size.get(info['size'])
+            if not candidates:
+                continue
+            try:
+                lhash = quickxorhash_file(info['path'])
+            except OSError:
+                continue
+            match = next((c for c in candidates if c[2] == lhash), None)
+            if not match:
+                continue
+            if self._apply_server_side_move(match[0], match[1], lpath):
+                candidates.remove(match)
+
+    def _apply_server_side_move(self, src_path: str, src_meta: Dict, dst_path: str) -> bool:
+        """PATCH-move the OneDrive item from *src_path* to *dst_path*. Returns success."""
+        item_id = src_meta.get('id')
+        if not item_id:
+            return False
+        normalized = dst_path.replace('\\', '/')
+        new_name = normalized.rsplit('/', 1)[-1]
+        new_parent = normalized.rsplit('/', 1)[0] if '/' in normalized else ''
+        try:
+            self.client.move_item(item_id, new_name, new_parent)
+        except Exception as exc:
+            self._log_operation_error(
+                f"Server-side move failed {src_path} -> {dst_path}", exc
+            )
+            return False
+        # Keep state consistent: the tracked item now lives at the new path.
+        self.state_mgr.rename_entry(src_path, dst_path)
+        self.state_mgr.remove_tombstone(src_path)
+        logger.info(f"Detected offline move: {src_path} -> {dst_path} (server-side PATCH)")
+        return True
+
     def _upload_is_redundant(self, rel_path: str, local_path: Path, mtime: float, size: int) -> bool:
         """Return True if the local file's content matches the last synced hash.
 
