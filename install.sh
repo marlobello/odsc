@@ -192,19 +192,27 @@ if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
     systemctl --user daemon-reload
     echo "✓ Systemd service installed"
 
-    echo ""
-    read -p "Enable service to start automatically on login? [Y/n] " -n 1 -r </dev/tty
-    echo
-    if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
-        systemctl --user enable odsc
-        echo "✓ Service enabled for auto-start"
-    fi
+    if systemctl --user is-active --quiet odsc; then
+        # Update path: the daemon is already running the old code. Restart it so
+        # the new code — and any state-schema migration that runs when the new
+        # code first opens the database — takes effect immediately.
+        systemctl --user restart odsc
+        echo "✓ Service restarted to apply the update"
+    else
+        echo ""
+        read -p "Enable service to start automatically on login? [Y/n] " -n 1 -r </dev/tty
+        echo
+        if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
+            systemctl --user enable odsc
+            echo "✓ Service enabled for auto-start"
+        fi
 
-    read -p "Start service now? [Y/n] " -n 1 -r </dev/tty
-    echo
-    if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
-        systemctl --user start odsc
-        echo "✓ Service started"
+        read -p "Start service now? [Y/n] " -n 1 -r </dev/tty
+        echo
+        if [[ -z $REPLY ]] || [[ $REPLY =~ ^[Yy]$ ]]; then
+            systemctl --user start odsc
+            echo "✓ Service started"
+        fi
     fi
 else
     echo "Skipped systemd service installation"
