@@ -57,8 +57,16 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 **Files**:
 - `config.json`: User settings (sync_directory, sync_interval, log_level, client_id)
 - `.onedrive_token`: Encrypted OAuth credentials (uses keyring + cryptography)
-- `sync_state.db`: SQLite state database with `file_cache`, `sync_state`, and `metadata` tables
+- `sync_state.db`: SQLite state database (schema v2) with `file_cache`, `sync_state`,
+  and `metadata` tables. Both `file_cache` and `sync_state` carry a `quickxorhash`
+  column; `metadata` also persists `conflicts`, `_deletion_failures`, and
+  `tombstones` as JSON. The schema migrates in place (idempotent `ALTER`).
 - `odsc.log`: Application logs
+
+**Persistence performance**: the periodic sync writes one bulk snapshot per
+cycle, while the watchdog hot path persists a single changed row incrementally
+(`Config.persist_sync_entry`) rather than rewriting the whole database per file
+change.
 
 ### 2. OneDrive Client (`onedrive_client.py`)
 
@@ -85,22 +93,56 @@ OneDrive Sync Client (ODSC) is designed as a modular, event-driven sync client f
 - **Automatic uploads**: New/modified local files uploaded to OneDrive
 - **Selective downloads**: Only syncs files user has marked as "downloaded"
 - **State tracking**: Maintains file metadata to detect changes
-- **Thread-safe**: Uses locks for concurrent access
+- **Content-addressed change detection**: Uses OneDrive's `quickXorHash` to detect real content changes (see below)
+- **Thread-safe**: Uses locks for concurrent access (`SyncStateManager` owns all state behind a lock)
 - **Conflict detection**: Identifies simultaneous local and remote changes
+- **Decision engine**: Pure, unit-tested action logic in `odsc.sync.SyncDecisionEngine`
 
 **Sync Logic**:
 1. **File Event**: Watchdog detects local change → Queue for sync
-2. **Periodic Check**: Every N seconds, scan all local and remote files
-3. **Change Detection**: Compare local mtime, remote eTag against stored state
-4. **Sync Decision**: Determine action (upload, download, conflict, skip)
-5. **Execute**: Perform upload/download/conflict resolution
-6. **Update State**: Record new metadata for synced files
+2. **Periodic Check**: Every N seconds, fetch a delta query and scan local files
+3. **Change Detection**: Compare local mtime/size (fast path) and `quickXorHash`
+   (authoritative) against stored state; compare remote `eTag`/`quickXorHash`
+4. **Sync Decision**: Determine action (upload, download, conflict, recycle, skip)
+5. **Execute**: Perform upload/download/conflict/recycle (parallel thread pool)
+6. **Update State**: Record new metadata (incl. content hash) for synced files
 
 **Design Decisions**:
 - **Selective sync**: Remote files not auto-downloaded (user must opt-in via GUI)
-- **Safe deletions**: Local deletions don't affect OneDrive, remote deletions move to trash
+- **Safe deletions**: Local deletions never affect OneDrive; remote deletions move
+  the local copy to the system trash (`send2trash`), never permanent deletion
 - **Conflict preservation**: Both versions kept when simultaneous edits occur
 - **Debouncing**: Batch rapid changes before uploading
+
+### Sync Integrity & Safety Mechanisms
+
+These mechanisms harden sync correctness. The overriding invariant is that ODSC
+**never deletes data from OneDrive** — remote-deleted files only move to the
+local trash.
+
+- **Content-addressed change detection (`quickxorhash.py`)**: ODSC computes
+  OneDrive's `quickXorHash` locally and stores it per file. `(mtime, size)` is a
+  cheap pre-filter; the hash is the authoritative signal. This avoids spurious
+  uploads on touch, catches same-size edits, and prevents the download→upload
+  echo.
+- **Echo / redundant-upload suppression**: Before uploading, if the local
+  content hash matches the last synced hash, the upload is skipped (and mtime
+  refreshed). This kills the self-write echo (a download triggering a re-upload)
+  and no-op touches. A genuine content change is never skipped.
+- **Deletion tombstones**: A remote deletion records a durable, persisted
+  tombstone (with the deleted version's hash). A local file matching a remote
+  tombstone is recycled instead of being re-uploaded ("resurrected"), even after
+  partial state loss. If the content differs — a new user file at the same path —
+  the tombstone is cleared and the file uploads normally (never trashed).
+- **Integrity verification**: After every transfer the `quickXorHash` is
+  verified. Downloads hash the temp file **before** the atomic replace, so a
+  corrupt download never overwrites the good local copy; mismatches are retried.
+- **Offline move detection**: A file moved/renamed while the daemon was down is
+  matched by content identity (size + hash) and mirrored as a single server-side
+  PATCH move, instead of re-uploading and orphaning a duplicate on OneDrive.
+- **Throttling**: HTTP 429 is retryable and the server's `Retry-After` header is
+  honored (in addition to `tenacity` exponential backoff with jitter).
+
 
 ### 4. GNOME GUI (`src/odsc/gui/` package)
 
@@ -143,7 +185,7 @@ Queue Change
     ↓
 Sync Thread Picks Up
     ↓
-Check if File Modified (compare mtime)
+Check if File Modified (mtime/size fast path, then quickXorHash)
     ↓
 Upload to OneDrive API
     ↓
@@ -242,12 +284,15 @@ Store Token + Refresh Token
 ### API Rate Limiting
 - Microsoft Graph has rate limits
 - Uploads and downloads use `tenacity` retries with exponential backoff and jitter for transient errors
+- HTTP 429 is treated as retryable and the server's `Retry-After` header is honored (429/503), capped at a safe maximum
 - Batch operations where possible
 
 ### Large Files
 - Streaming upload/download
+- Files above ~4 MiB are uploaded with a resumable **upload session** (chunked,
+  320 KiB-aligned fragments); smaller files use a single PUT
 - Download chunk size: 64 KB (65536 bytes), configurable via `download_chunk_size`
-- No size limit (handled by API)
+- Transfers are integrity-verified via `quickXorHash` (see Sync Integrity & Safety Mechanisms)
 
 ## Extensibility
 
@@ -308,13 +353,16 @@ Future consideration: Plugin system for:
 
 1. **Bandwidth Control**: Limit upload/download speed
 2. **File Exclusions**: Ignore patterns (.gitignore style)
-3. **System Tray**: Minimize to tray with status icon
-4. **Notifications**: Desktop notifications for sync events
+3. **System Tray**: Already implemented! Status icon via `system_tray.py` (AppIndicator)
+4. **Notifications**: Already implemented! Desktop notifications for conflicts and updates (`notify-send`)
 5. **Multi-account**: Support multiple OneDrive accounts
 6. **Sharing**: Manage OneDrive sharing from GUI
 7. **Offline Mode**: Queue operations when offline
 8. **Delta Sync**: Already implemented! Uses OneDrive delta API for efficiency
 9. **Progress Bars**: Real-time upload/download progress in GUI
+10. **Large-file uploads**: Already implemented! Resumable upload sessions for big files
+11. **Write-ahead journal**: Full intent log + resumable transfers (incremental
+    state persistence is already implemented; the full journal is a follow-up)
 
 ## Known Limitations
 
