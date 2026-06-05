@@ -42,7 +42,6 @@ class ConflictResolutionDialog(Gtk.Dialog):
     KEEP_LOCAL = "keep_local"
     KEEP_REMOTE = "keep_remote"
     KEEP_BOTH = "keep_both"
-    SKIP = "skip"
 
     def __init__(self, parent, sync_dir: Path, conflicts: Dict[str, Dict[str, Any]]):
         """Initialize conflict resolution dialog.
@@ -144,10 +143,6 @@ class ConflictResolutionDialog(Gtk.Dialog):
         keep_both_btn.connect("clicked", self._on_keep_both)
         action_box.pack_start(keep_both_btn, False, False, 0)
 
-        skip_btn = Gtk.Button(label="Skip")
-        skip_btn.set_tooltip_text("Skip this conflict for now")
-        skip_btn.connect("clicked", self._on_skip)
-        action_box.pack_start(skip_btn, False, False, 0)
 
         # Close button at the bottom
         self.add_button("Done", Gtk.ResponseType.CLOSE)
@@ -264,8 +259,3 @@ class ConflictResolutionDialog(Gtk.Dialog):
         logger.info(f"Conflict kept both versions: {original_path}")
         self._advance()
 
-    def _on_skip(self, widget) -> None:
-        """Skip this conflict."""
-        original_path, _ = self._conflicts[self._index]
-        self._results[original_path] = self.SKIP
-        self._advance()
