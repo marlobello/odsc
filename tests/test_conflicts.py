@@ -164,19 +164,9 @@ class TestConflictResolutionActions:
 
     def test_keep_local_deletes_conflict_file(self, tmp_path):
         """Keep Local should delete the .conflict file."""
-        from odsc.gui.conflict_dialog import ConflictResolutionDialog
-
         # Setup files
         (tmp_path / "report.txt").write_text("local content")
         (tmp_path / "report.txt.conflict").write_text("remote content")
-
-        conflicts = {
-            "report.txt": {
-                "conflict_path": "report.txt.conflict",
-                "detected_at": "2026-06-04T12:00:00",
-                "remote_modified": "2026-06-04T11:00:00Z",
-            }
-        }
 
         # Simulate keep_local action directly on the file logic
         conflict_path = tmp_path / "report.txt.conflict"
