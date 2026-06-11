@@ -9,8 +9,20 @@ from typing import Optional
 
 import gi
 gi.require_version('Gtk', '3.0')
-gi.require_version('AppIndicator3', '0.1')
-from gi.repository import Gtk, AppIndicator3, GLib, Gio
+
+# AppIndicator namespace varies across distros: the legacy "AppIndicator3" is
+# present on Ubuntu/Debian and Fedora, while many modern distros ship only the
+# Ayatana fork ("AyatanaAppIndicator3"). Bind whichever is available to a single
+# alias so the rest of this module is namespace-agnostic. A failure here raises
+# ImportError/ValueError, which the daemon catches to disable the tray gracefully.
+try:
+    gi.require_version('AppIndicator3', '0.1')
+    from gi.repository import AppIndicator3 as AppIndicator
+except (ValueError, ImportError):
+    gi.require_version('AyatanaAppIndicator3', '0.1')
+    from gi.repository import AyatanaAppIndicator3 as AppIndicator
+
+from gi.repository import Gtk, GLib, Gio
 
 logger = logging.getLogger(__name__)
 
@@ -37,18 +49,18 @@ class SystemTrayIndicator:
         
         if icon_theme_name:
             # Icon is installed in theme, use its name
-            self.indicator = AppIndicator3.Indicator.new(
+            self.indicator = AppIndicator.Indicator.new(
                 "odsc-sync",
                 icon_theme_name,
-                AppIndicator3.IndicatorCategory.APPLICATION_STATUS
+                AppIndicator.IndicatorCategory.APPLICATION_STATUS
             )
         else:
             # Fall back to direct path (will be scaled by theme)
             icon_path = self._find_icon_path()
-            self.indicator = AppIndicator3.Indicator.new(
+            self.indicator = AppIndicator.Indicator.new(
                 "odsc-sync",
                 icon_path if icon_path else "cloud-symbolic",
-                AppIndicator3.IndicatorCategory.APPLICATION_STATUS
+                AppIndicator.IndicatorCategory.APPLICATION_STATUS
             )
         
         # Set title before activation
@@ -67,7 +79,7 @@ class SystemTrayIndicator:
         # (e.g. daemon restart), the icon appears without waiting for the D-Bus
         # watcher callback.  If the panel isn't ready yet, the watcher callback
         # will re-activate later.
-        self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+        self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
         
         logger.info("System tray indicator initialized")
     
@@ -284,7 +296,7 @@ class SystemTrayIndicator:
     def _activate_indicator(self):
         """Activate the indicator (must be called on GTK main thread)."""
         if self.indicator:
-            self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+            self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
             logger.debug("System tray indicator activated")
         return False  # Remove from idle queue
     

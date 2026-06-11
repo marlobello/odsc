@@ -1,0 +1,10 @@
+# Declares a PEP 517/518 build backend so that modern pip performs PEP 660
+# editable installs (`pip install -e .`) instead of the deprecated
+# `setup.py develop` path. pip 25.3 removes the legacy fallback, so this is
+# required for editable installs to keep working on newer toolchains.
+#
+# Project metadata continues to live in setup.py / VERSION; this file only
+# pins the build backend.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"

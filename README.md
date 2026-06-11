@@ -24,9 +24,26 @@ A lightweight Linux sync client for Microsoft OneDrive that runs as a background
 
 ## Requirements
 
-- Linux with GTK 3.0+ (Ubuntu 20.04+, Fedora 33+, etc.)
-- Python 3.8 or higher
+- Linux with GTK 3.0+
+- Python 3.8 or higher (tested through 3.14)
 - Microsoft account with OneDrive
+
+### Supported distributions
+
+The installer auto-detects your package manager and installs the system
+dependencies for it:
+
+| Distribution        | Package manager | System tray indicator |
+|---------------------|-----------------|-----------------------|
+| Ubuntu / Debian     | `apt-get`       | AppIndicator3 or Ayatana (auto) |
+| Fedora / RHEL       | `dnf`           | AppIndicator3 or Ayatana (auto) |
+| Arch Linux          | `pacman`        | via AUR (optional) |
+| openSUSE            | `zypper`        | Ayatana (auto) |
+
+The system tray indicator is optional — ODSC syncs normally even when it is not
+available; the tray icon is simply disabled. On other distributions, install
+PyGObject (GTK 3), `dbus-python`, and the Python packages listed in
+`requirements.txt` manually, then run `bash install.sh`.
 
 ## Quick Installation
 
@@ -228,6 +245,23 @@ Use this when local state becomes corrupted or you want a fresh start.
 2. Check internet connection
 3. Try **Authentication → Login** again
 
+### GUI/daemon stopped working after an OS or Python upgrade?
+
+A distribution upgrade that changes the default `python3` version (for example
+Ubuntu 26.04 moving to Python 3.14) leaves the previous per-user ODSC install
+bound to the old interpreter, so the GUI and daemon can no longer import it.
+
+```bash
+# Diagnose: reports the active Python, dependency status, daemon state,
+# and prints the exact fix command for any problem it finds.
+odsc doctor
+
+# Fix: reinstall under the current Python (cleans up the orphaned install),
+# then restart the daemon.
+curl -fsSL https://github.com/marlobello/odsc/releases/latest/download/install.sh | bash
+systemctl --user daemon-reload && systemctl --user reset-failed odsc && systemctl --user restart odsc
+```
+
 ### Need to reinstall?
 ```bash
 # Uninstall
@@ -245,6 +279,7 @@ odsc-daemon         # Run sync daemon (if not using systemd)
 odsc auth           # Authenticate from command line
 odsc status         # View sync status
 odsc update         # Check for and install updates
+odsc doctor         # Diagnose install/runtime problems and print fixes
 odsc-reset-local    # Reset local state (ADVANCED - see Troubleshooting)
 ```
 

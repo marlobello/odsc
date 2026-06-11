@@ -313,6 +313,171 @@ def cmd_conflicts(args):
     return 0
 
 
+def cmd_doctor(args):
+    """Diagnose a broken installation and print exact fix commands.
+
+    The most common breakage is an OS upgrade bumping the default python3 minor
+    version, which leaves the per-user ODSC install bound to the previous version.
+    """
+    import importlib
+    import platform
+
+    problems = []
+
+    print("ODSC doctor")
+    print("=" * 40)
+
+    # ── Interpreter ──────────────────────────────────────────────────────────
+    pyver = "%d.%d.%d" % sys.version_info[:3]
+    pyminor = "%d.%d" % sys.version_info[:2]
+    print("Python:        %s (%s)" % (pyver, sys.executable))
+    print("Platform:      %s" % platform.platform())
+    print("ODSC version:  %s" % __version__)
+    print("ODSC location: %s" % str(Path(__file__).resolve().parent))
+
+    # ── Orphaned cross-version installs ──────────────────────────────────────
+    # ODSC is importable right now (this command is running), but a stale install
+    # under a *different*, now-removed python is exactly what breaks the GUI and
+    # daemon entry points after an OS upgrade. Surface it proactively.
+    home = Path.home()
+    orphaned = []
+    for site_dir in sorted(home.glob(".local/lib/python3.*/site-packages")):
+        ver = site_dir.parent.name.replace("python", "")
+        if ver == pyminor:
+            continue
+        interpreter_present = _which("python%s" % ver)
+        markers = (list(site_dir.glob("odsc*.egg-link"))
+                   + list(site_dir.glob("odsc*.dist-info"))
+                   + list(site_dir.glob("__editable__.odsc*"))
+                   + list(site_dir.glob("__editable___odsc*")))
+        pth = site_dir / "easy-install.pth"
+        if not markers and pth.exists():
+            try:
+                if "odsc/src" in pth.read_text():
+                    markers.append(pth)
+            except OSError:
+                pass
+        if markers:
+            orphaned.append((ver, interpreter_present))
+
+    print()
+    if orphaned:
+        for ver, present in orphaned:
+            state = "interpreter still present" if present else "interpreter REMOVED by an upgrade"
+            print("⚠  Stale ODSC install under python%s (%s)" % (ver, state))
+        problems.append("orphaned-install")
+    else:
+        print("✓ No orphaned cross-version installs detected")
+
+    # ── Dependencies ─────────────────────────────────────────────────────────
+    print()
+    print("Dependencies:")
+    required = [
+        ("requests", "requests"),
+        ("watchdog", "watchdog"),
+        ("dateutil", "python-dateutil"),
+        ("send2trash", "send2trash"),
+        ("cryptography", "cryptography"),
+        ("keyring", "keyring"),
+        ("certifi", "certifi"),
+        ("tenacity", "tenacity"),
+    ]
+    for module_name, pkg_name in required:
+        try:
+            importlib.import_module(module_name)
+            print("  ✓ %s" % pkg_name)
+        except Exception as e:  # noqa: BLE001 - report any import failure
+            print("  ✗ %s (%s)" % (pkg_name, e))
+            problems.append("dep:%s" % pkg_name)
+
+    # ── GTK / GObject introspection (GUI + tray) ─────────────────────────────
+    print()
+    print("Desktop integration:")
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gtk  # noqa: F401
+        print("  ✓ GTK 3 (PyGObject)")
+    except Exception as e:  # noqa: BLE001
+        print("  ✗ GTK 3 (PyGObject) (%s)" % e)
+        problems.append("gtk")
+
+    try:
+        import dbus  # noqa: F401
+        print("  ✓ D-Bus (dbus-python)")
+    except Exception as e:  # noqa: BLE001
+        print("  ✗ D-Bus (dbus-python) (%s)" % e)
+        problems.append("dbus")
+
+    tray_ns = None
+    for ns in ("AppIndicator3", "AyatanaAppIndicator3"):
+        try:
+            import gi
+            gi.require_version(ns, "0.1")
+            importlib.import_module("gi.repository.%s" % ns)
+            tray_ns = ns
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if tray_ns:
+        print("  ✓ System tray indicator (%s)" % tray_ns)
+    else:
+        print("  ⚠ System tray indicator unavailable (tray icon disabled; sync still works)")
+
+    # ── Daemon (systemd --user) ──────────────────────────────────────────────
+    print()
+    print("Background daemon (systemd --user):")
+    if _which("systemctl"):
+        active = _systemctl_user("is-active", "odsc")
+        enabled = _systemctl_user("is-enabled", "odsc")
+        print("  state:   %s" % (active or "unknown"))
+        print("  enabled: %s" % (enabled or "unknown"))
+        if active not in ("active", None):
+            problems.append("daemon")
+    else:
+        print("  systemctl not available")
+
+    # ── Verdict ──────────────────────────────────────────────────────────────
+    print()
+    print("=" * 40)
+    if not problems:
+        print("✓ No problems detected.")
+        return 0
+
+    print("Detected issue(s): %s" % ", ".join(problems))
+    print()
+    print("Suggested fix:")
+    if any(p in ("orphaned-install", "gtk", "dbus") or p.startswith("dep:") for p in problems):
+        print("  Re-run the installer for the current Python (%s):" % pyminor)
+        print("    curl -fsSL https://github.com/marlobello/odsc/releases/latest/download/install.sh | bash")
+        print("  Or, from a local checkout:")
+        print("    bash install.sh --dev")
+    if "daemon" in problems:
+        print("  Restart the background daemon:")
+        print("    systemctl --user daemon-reload && systemctl --user reset-failed odsc && systemctl --user restart odsc")
+    return 1
+
+
+def _which(name):
+    """Return True if an executable is found on PATH (Python 3.8 compatible)."""
+    import shutil
+    return shutil.which(name) is not None
+
+
+def _systemctl_user(verb, unit):
+    """Return the trimmed output of `systemctl --user <verb> <unit>`, or None."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", verb, unit],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=10,
+        )
+        return result.stdout.decode().strip() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -352,6 +517,13 @@ def main():
     # Conflicts command
     conflicts_parser = subparsers.add_parser('conflicts', help='List unresolved file conflicts')
     conflicts_parser.set_defaults(func=cmd_conflicts)
+
+    # Doctor command
+    doctor_parser = subparsers.add_parser(
+        'doctor',
+        help='Diagnose installation/runtime problems and print fix commands',
+    )
+    doctor_parser.set_defaults(func=cmd_doctor)
 
     args = parser.parse_args()
     

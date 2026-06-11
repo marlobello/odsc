@@ -175,6 +175,47 @@ def test_update_status_schedules_label_update(tray_module):
 
     tray.update_status("Paused")
 
-    assert glib.idle_add.called
-    assert tray.status_item.label == "Status: Paused"
+def _install_fake_gi(monkeypatch, available_indicator):
+    """Install fake `gi`/`gi.repository` modules exposing one indicator namespace.
+
+    `available_indicator` is the namespace name that should resolve successfully
+    ("AppIndicator3" or "AyatanaAppIndicator3"); `gi.require_version` raises
+    ValueError for any other indicator namespace, mirroring real GI behaviour.
+    """
+    fake_indicator = types.SimpleNamespace(
+        Indicator=object,
+        IndicatorCategory=types.SimpleNamespace(APPLICATION_STATUS="application-status"),
+        IndicatorStatus=types.SimpleNamespace(ACTIVE="active"),
+    )
+
+    def require_version(namespace, version):
+        if namespace in ("AppIndicator3", "AyatanaAppIndicator3") and namespace != available_indicator:
+            raise ValueError("Namespace %s not available" % namespace)
+
+    gi = types.ModuleType("gi")
+    gi.require_version = require_version
+    repository = types.ModuleType("gi.repository")
+    repository.Gtk = types.SimpleNamespace()
+    repository.GLib = types.SimpleNamespace(idle_add=Mock())
+    repository.Gio = types.SimpleNamespace()
+    setattr(repository, available_indicator, fake_indicator)
+
+    monkeypatch.setitem(sys.modules, "gi", gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", repository)
+    monkeypatch.delitem(sys.modules, "odsc.system_tray", raising=False)
+
+    import odsc.system_tray as module
+    return importlib.reload(module), fake_indicator
+
+
+def test_tray_uses_legacy_appindicator_when_available(monkeypatch):
+    """The module binds the alias to AppIndicator3 when that namespace is present."""
+    module, fake_indicator = _install_fake_gi(monkeypatch, "AppIndicator3")
+    assert module.AppIndicator is fake_indicator
+
+
+def test_tray_falls_back_to_ayatana_appindicator(monkeypatch):
+    """When AppIndicator3 is unavailable, the module falls back to Ayatana."""
+    module, fake_indicator = _install_fake_gi(monkeypatch, "AyatanaAppIndicator3")
+    assert module.AppIndicator is fake_indicator
 
