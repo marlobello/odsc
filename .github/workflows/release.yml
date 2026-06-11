@@ -34,7 +34,10 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
+          # setuptools/wheel are required for the editable install with
+          # --no-build-isolation: Python 3.12+ no longer ships setuptools in the
+          # interpreter, so the PEP 517 backend must be installed explicitly.
+          python -m pip install --upgrade pip setuptools wheel
           grep -vE '^\s*(PyGObject|dbus-python)' requirements.txt | pip install -r /dev/stdin
           pip install pytest keyrings.alt
           pip install -e . --no-deps --no-build-isolation

@@ -38,7 +38,9 @@ jobs:
           # python3-dbus) to avoid native build failures.  Install only pure-Python deps here.
           grep -vE '^\s*(PyGObject|dbus-python)' requirements.txt | pip install -r /dev/stdin
           # keyrings.alt provides a file-based backend for headless CI (no D-Bus/Secret Service)
-          pip install pytest keyrings.alt
+          # setuptools/wheel: required for the editable install with --no-build-isolation, since
+          # Python 3.12+ no longer ships setuptools (the PEP 517 build backend) in the interpreter.
+          pip install pytest keyrings.alt setuptools wheel
           pip install -e . --no-deps --no-build-isolation
 
       - name: Run tests
