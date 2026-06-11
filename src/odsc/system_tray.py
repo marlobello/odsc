@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """System tray indicator for ODSC daemon."""
 
+from __future__ import annotations
+
 import logging
 import subprocess
 import webbrowser
